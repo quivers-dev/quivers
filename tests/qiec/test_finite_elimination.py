@@ -7,12 +7,19 @@ import pytest
 
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
+    EMPTY_ROW,
     FiniteBaseChange,
     FiniteEliminationWork,
+    FiniteSourceFactor,
     QiecModule,
     dumps,
+    eliminate_finite_source,
     loads,
+    run_named,
+    validate_module,
 )
+from quivers.qiec import finite_elimination as elimination
+from quivers.qiec.builtins import RANDOM_SAMPLE
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -528,7 +535,8 @@ def test_proved_base_change_commutes_with_dense_finite_contraction(base_change):
         (True, True),
     )
     assert original.factor.cells == direct == ((False, True), (False, False))
-    assert changed.factor == FiniteFactor(output, tuple(pair[0] for pair in direct))
+    pairs = cast(tuple[tuple[bool, bool], ...], direct)
+    assert changed.factor == FiniteFactor(output, tuple(pair[0] for pair in pairs))
     proof = changed.base_change
     assert proof is not None
     assert (proof.source, proof.target, proof.mapping, proof.checks) == (
@@ -585,3 +593,208 @@ def test_base_change_refuses_each_independent_law_defect(base_change, mapping, l
     witness = exc.value.counterexample
     assert witness.left is not witness.right
     assert len(witness.arguments) == (2 if law in {"addition", "multiplication"} else 0)
+
+
+_FACTORS = """
+define implication(a : Bool, b : Bool) : Bool !{} =
+    if a then
+        return b
+    else
+        return true
+
+define imply(a : Bool, b : Bool) : Bool !{} =
+    implication(a, b)
+
+define equal(a : Bool, b : Bool) : Bool !{} =
+    if a then
+        return b
+    else
+        if b then
+            return false
+        else
+            return true
+
+define constant() : Bool !{} =
+    return true
+
+define from_pair(p : (Bool * Unit)) : Bool !{} =
+    return p[0]
+
+define asymmetric_pair(p : (Bool * Bool)) : Bool !{} =
+    if p[0] then
+        if p[1] then
+            return false
+        else
+            return true
+    else
+        return false
+"""
+
+
+def _source_factors(module, *declarations):
+    ids = {owner.name: owner.id for owner in module.computations}
+    return tuple(FiniteSourceFactor(axes, ids[name]) for name, axes in declarations)
+
+
+def _count_factor_evaluations(monkeypatch):
+    recorded = []
+    run = elimination.run_named
+
+    def observe(*args, **kwargs):
+        if args[1] not in ("add", "multiply"):
+            recorded.append(args[1:3])
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(elimination, "run_named", observe)
+    return recorded
+
+
+def test_named_factors_agree_with_source_and_an_independent_dense_oracle(monkeypatch):
+    module = _compiled(_BOOLEAN_SOURCE + _FACTORS, "finite-source")
+    restored = loads(dumps(module))
+    assert isinstance(restored, QiecModule) and restored == module
+    module = restored
+    algebra = _algebra(module, False, True)
+    calls = _count_factor_evaluations(monkeypatch)
+    source = _source_factors(
+        module, ("imply", ("x", "y")), ("equal", ("z", "y")), ("constant", ())
+    )
+    output = ("z", "x")
+    found = eliminate_finite_source(
+        module, algebra, source, output, max_cells=8, max_source_cells=9
+    )
+
+    truth = (False, True)
+    pairs = tuple(product(truth, repeat=2))
+    assert calls == [
+        *((name, pair) for name in ("imply", "equal") for pair in pairs),
+        ("constant", ()),
+    ]
+    assert found.source_evaluations == len(calls) == 9
+    assert found.result.factor.axes == output
+    native = tuple(
+        any(
+            run_named(module, "imply", (x, y)).value
+            and run_named(module, "equal", (z, y)).value
+            and run_named(module, "constant", ()).value
+            for y in truth
+        )
+        for z, x in pairs
+    )
+    expected = tuple(any(((not x or y) and (z == y)) for y in truth) for z, x in pairs)
+    assert found.result.factor.cells == native == expected == (True, False, True, True)
+    assert found.result.work == FiniteEliminationWork(additions=12, multiplications=24)
+    assert found.result.largest == 8
+
+    reversed_axes = _source_factors(module, ("imply", ("y", "x")))
+    swapped = eliminate_finite_source(
+        module, algebra, (*reversed_axes, *source[1:]), output
+    )
+    assert swapped.result.factor.cells == (True, True, False, True)
+
+
+def test_product_axis_order_and_exact_repeated_axis_type(monkeypatch):
+    module = _compiled(_BOOLEAN_SOURCE + _FACTORS, "finite-source-product")
+    algebra = _algebra(module, False, True)
+    calls = _count_factor_evaluations(monkeypatch)
+    factor = _source_factors(module, ("asymmetric_pair", ("p",)))
+    result = eliminate_finite_source(module, algebra, factor, ("p",))
+    assert calls == [
+        ("asymmetric_pair", ((False, False),)),
+        ("asymmetric_pair", ((False, True),)),
+        ("asymmetric_pair", ((True, False),)),
+        ("asymmetric_pair", ((True, True),)),
+    ]
+    assert result.result.factor.cells == (False, False, True, False)
+
+    calls.clear()
+    source = _source_factors(module, ("imply", ("x", "y")), ("from_pair", ("y",)))
+    # Both Bool and Bool * Unit have extent 2. Their ordered values and
+    # exact types still differ, so their axis names cannot be identified.
+    with pytest.raises(FiniteLawUnsupported, match="axis 'y' has inconsistent types"):
+        eliminate_finite_source(module, algebra, source, ("x",))
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("output", "limits", "message"),
+    [
+        (("z", "x"), {"max_source_cells": 8}, "source factors need 9 cells"),
+        (("z", "x"), {"max_cells": 7}, "finite bag needs 8 cells"),
+        (("z", "x"), {"max_cells": 3}, "finite table needs 4 cells"),
+        (("not_an_axis",), {}, "output axes must be distinct input axes"),
+    ],
+)
+def test_source_and_contraction_bounds_check_before_observing_factors(
+    output, limits, message, monkeypatch
+):
+    module = _compiled(_BOOLEAN_SOURCE + _FACTORS, "finite-source-bounds")
+    algebra = _algebra(module, False, True)
+    calls = _count_factor_evaluations(monkeypatch)
+    source = _source_factors(
+        module, ("imply", ("x", "y")), ("equal", ("z", "y")), ("constant", ())
+    )
+    error = FiniteLawLimit if limits else ValueError
+    with pytest.raises(error, match=message):
+        eliminate_finite_source(module, algebra, source, output, **limits)
+    assert calls == []
+
+
+_DRAW_FACTORS = """
+instance random : Random
+
+handler capture for Random : Bool -> Bool [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    sample[a : Type](location : Site[a], spec : Sampleable[a]) resumes 0 =>
+        return true
+
+define toss() : Bool !{random} =
+    perform random.sample[Bool](site("table-draw"), Bernoulli(0.5))
+
+define raw_factor(x : Bool) : Bool !{random} =
+    if x then
+        return false
+    else
+        toss()
+
+define hidden_factor(x : Bool) : Bool !{} =
+    handle random with capture in
+        raw_factor(x)
+
+define closed_factor(x : Bool) : Bool !{} =
+    hidden_factor(x)
+"""
+
+
+@pytest.mark.parametrize(
+    ("root", "message"),
+    [
+        ("raw_factor", "raw_factor.*effects"),
+        ("closed_factor", "hidden_factor.*handler"),
+    ],
+)
+def test_draw_through_a_call_or_masked_row_is_refused_before_any_evaluation(
+    root, message, monkeypatch
+):
+    module = _compiled(_BOOLEAN_SOURCE + _DRAW_FACTORS, "finite-source-draw")
+    validate_module(module)
+    owners = {owner.name: owner for owner in module.computations}
+    assert owners["closed_factor"].type.effects == EMPTY_ROW
+    assert owners["toss"].type.effects != EMPTY_ROW
+    native = run_named(module, "closed_factor", (False,))
+    assert bool(native.value)
+    assert tuple(
+        event.detail["operation"]
+        for event in native.trace
+        if event.event == "operation.requested"
+    ) == (str(RANDOM_SAMPLE),)
+    algebra = _algebra(module, False, True)
+    factor = _source_factors(module, (root, ("x",)))
+
+    def unexpected_evaluation(*_args, **_kwargs):
+        pytest.fail("neither factor cells nor algebra operators may run")
+
+    monkeypatch.setattr(elimination, "run_named", unexpected_evaluation)
+    with pytest.raises(FiniteLawUnsupported, match=message):
+        eliminate_finite_source(module, algebra, factor, ("x",))

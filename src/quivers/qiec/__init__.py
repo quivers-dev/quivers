@@ -295,8 +295,11 @@ from quivers.qiec.finite_elimination import (
     FiniteEliminationStep,
     FiniteEliminationWork,
     FiniteFactor,
+    FiniteSourceEliminationResult,
+    FiniteSourceFactor,
     check_finite_algebra,
     eliminate_finite,
+    eliminate_finite_source,
 )
 from quivers.qiec.effects import (
     ArgumentDef,
@@ -1313,8 +1316,11 @@ __all__ += [
     "FiniteEliminationStep",
     "FiniteEliminationWork",
     "FiniteFactor",
+    "FiniteSourceEliminationResult",
+    "FiniteSourceFactor",
     "check_finite_algebra",
     "eliminate_finite",
+    "eliminate_finite_source",
 ]
 __all__ += [
     "StateSpecializationLimit",

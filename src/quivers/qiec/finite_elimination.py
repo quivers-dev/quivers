@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from itertools import product
@@ -18,6 +18,7 @@ from quivers.qiec.laws import (
     FiniteLawUnsupported,
     FiniteValue,
     _Shape,
+    _check_body,
     _check_reachable,
     _observed,
     _shape,
@@ -25,9 +26,16 @@ from quivers.qiec.laws import (
     _validate_limit,
     _values,
 )
-from quivers.qiec.module import QiecModule, validate_module
+from quivers.qiec.module import (
+    NamedComputation,
+    QiecModule,
+    _children,
+    called_computations,
+    validate_module,
+)
 from quivers.qiec.numbers import host_value
 from quivers.qiec.serialization import dumps
+from quivers.qiec.terms import Handle, NewInstance, Perform
 from quivers.qiec.types import TypeExpr
 
 type _OperationTable = tuple[tuple[int, ...], ...]
@@ -155,6 +163,22 @@ class FiniteFactor:
 
 
 @dataclass(frozen=True, slots=True)
+class FiniteSourceFactor:
+    """One finite factor supplied by a checked named computation.
+
+    Parameters
+    ----------
+    axes : tuple[str, ...]
+        One distinct axis per parameter, in the computation's parameter order.
+    computation : ComputationId
+        The source computation evaluated for each assignment.
+    """
+
+    axes: tuple[str, ...]
+    computation: ComputationId
+
+
+@dataclass(frozen=True, slots=True)
 class FiniteEliminationStep:
     """One exact sum of an ordered product of factor tables.
 
@@ -219,6 +243,23 @@ class FiniteEliminationResult:
     largest: int
     base_change: FiniteBaseChangeProof | None = None
     work: FiniteEliminationWork = FiniteEliminationWork(0, 0)
+
+
+@dataclass(frozen=True, slots=True)
+class FiniteSourceEliminationResult:
+    """A contraction with its independently counted source evaluation work.
+
+    Parameters
+    ----------
+    result : FiniteEliminationResult
+        The finite contraction and the counts of its operator table lookups.
+    source_evaluations : int
+        The number of top-level factor evaluations, one per factor cell.
+        Operator proof evaluations and calls within each factor are separate.
+    """
+
+    result: FiniteEliminationResult
+    source_evaluations: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -847,6 +888,171 @@ def _contract(
     )
 
 
+def _factor_geometry(
+    scopes: tuple[tuple[str, ...], ...],
+    output: tuple[str, ...],
+    extents: Mapping[str, int],
+) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """Check the geometry of factor tables without observing their entries.
+
+    Parameters
+    ----------
+    scopes : tuple[tuple[str, ...], ...]
+        The axes of all factors in written order.
+    output : tuple[str, ...]
+        The axes retained after elimination.
+    extents : Mapping[str, int]
+        The cardinality of every input axis.
+
+    Returns
+    -------
+    tuple[tuple[str, ...], tuple[int, ...]]
+        The axes in first occurrence order and the area of every factor.
+
+    Raises
+    ------
+    ValueError
+        If the factor or output axes and cardinalities are invalid.
+    """
+    if not scopes:
+        raise ValueError("finite elimination needs at least one factor")
+    if any(len(set(scope)) != len(scope) for scope in scopes):
+        raise ValueError("a finite factor cannot repeat an axis")
+    axes = tuple(dict.fromkeys(axis for scope in scopes for axis in scope))
+    if any(not isinstance(axis, str) or not axis for axis in axes):
+        raise ValueError("finite axes need nonempty names")
+    if set(axes) != set(extents) or any(
+        type(size) is not int or size < 0 for size in extents.values()
+    ):
+        raise ValueError("each finite axis needs one nonnegative integer extent")
+    if len(set(output)) != len(output) or not set(output) <= set(axes):
+        raise ValueError("output axes must be distinct input axes")
+    sizes = tuple(prod(extents[axis] for axis in scope) for scope in scopes)
+    return axes, sizes
+
+
+def _eliminate_factors(
+    module: QiecModule,
+    algebra: FiniteAlgebra,
+    scopes: tuple[tuple[str, ...], ...],
+    axes: tuple[str, ...],
+    sizes: tuple[int, ...],
+    output: tuple[str, ...],
+    extents: Mapping[str, int],
+    load_factors: Callable[[], tuple[FiniteFactor, ...]],
+    *,
+    base_change: FiniteBaseChange | None,
+    max_checks: int,
+    max_cells: int,
+    fuel: int,
+) -> FiniteEliminationResult:
+    """Plan and bound the exact contraction before obtaining its cells.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked source supplying the algebra.
+    algebra : FiniteAlgebra
+        The named algebra of the input factors.
+    scopes : tuple[tuple[str, ...], ...]
+        The validated axes of the factors in written order.
+    axes : tuple[str, ...]
+        The distinct axes in order of first occurrence.
+    sizes : tuple[int, ...]
+        The validated input factor areas.
+    output : tuple[str, ...]
+        The output axes in requested order.
+    extents : Mapping[str, int]
+        The exact cardinalities.
+    load_factors : Callable[[], tuple[FiniteFactor, ...]]
+        The already checked shape's cells, materialized after the area check.
+    base_change : FiniteBaseChange or None
+        The optional proved change of answer algebra.
+    max_checks, max_cells, fuel : int
+        The proof, area and individual evaluation limits.
+
+    Returns
+    -------
+    FiniteEliminationResult
+        The exact result and its contraction plan and work counts.
+
+    Raises
+    ------
+    FiniteAlgebraLawError
+        If a required equation fails.
+    FiniteLawLimit
+        If a proof, evaluation or table exceeds its checked limit.
+    FiniteLawUnsupported
+        If the checked algebra or factor cells fall outside the finite fragment.
+    """
+    initial = max((*sizes, prod(extents[axis] for axis in output)))
+    if initial > max_cells:
+        raise FiniteLawLimit(
+            f"finite table needs {initial} cells, exceeding {max_cells}"
+        )
+
+    source = _tables(module, algebra, max_checks, fuel)
+    tables = source
+    image = tuple(range(len(source.values)))
+    proof = None
+    if base_change is not None:
+        count = len(source.values)
+        mapping_checks = count + 2 * count**2 + 2
+        remaining = max_checks - source.proof.checks - mapping_checks
+        if remaining < 1:
+            raise FiniteLawLimit(
+                f"finite base-change proof exceeds {max_checks} checks"
+            )
+        tables = _tables(module, base_change.target, remaining, fuel)
+        image = _prove_base_change(module, source, tables, base_change.mapping, fuel)
+        proof = FiniteBaseChangeProof(
+            source.proof,
+            tables.proof,
+            base_change.mapping,
+            source.proof.checks + tables.proof.checks + mapping_checks,
+        )
+    shape = _shape(source.proof.carrier)
+    steps = _elimination_steps(
+        scopes, output, axes, extents, tables.proof.noncommutative is None
+    )
+    largest = max(
+        (
+            initial,
+            *(
+                max(
+                    step.cells,
+                    prod(extents[axis] for axis in step.bag if axis != step.variable),
+                )
+                for step in steps
+            ),
+        )
+    )
+    if largest > max_cells:
+        raise FiniteLawLimit(f"finite bag needs {largest} cells, exceeding {max_cells}")
+    indices = {value: index for value, index in zip(source.values, image, strict=True)}
+    active = [
+        _IndexedFactor(
+            factor.axes,
+            tuple(indices[_observed(shape, value)] for value in factor.cells),
+        )
+        for factor in load_factors()
+    ]
+    additions = multiplications = 0
+    for step in steps:
+        selected = tuple(active[index] for index in step.positions)
+        kept = tuple(axis for axis in step.bag if axis != step.variable)
+        value, work = _contract(tables, selected, kept, (step.variable,), extents)
+        additions += work.additions
+        multiplications += work.multiplications
+        _replace_factors(active, step.positions, value)
+    result, work = _contract(tables, tuple(active), output, (), extents)
+    factor = FiniteFactor(output, tuple(tables.values[index] for index in result.cells))
+    total = FiniteEliminationWork(
+        additions + work.additions, multiplications + work.multiplications
+    )
+    return FiniteEliminationResult(factor, tables.proof, steps, largest, proof, total)
+
+
 def eliminate_finite(
     module: QiecModule,
     algebra: FiniteAlgebra,
@@ -910,91 +1116,215 @@ def eliminate_finite(
         If the law proof, operator evaluation, or a table exceeds a bound.
     """
     _validate_limit("max_cells", max_cells)
-    if not factors:
-        raise ValueError("finite elimination needs at least one factor")
     scopes = tuple(factor.axes for factor in factors)
-    if any(len(set(scope)) != len(scope) for scope in scopes):
-        raise ValueError("a finite factor cannot repeat an axis")
-    axes = tuple(dict.fromkeys(axis for scope in scopes for axis in scope))
-    if any(not isinstance(axis, str) or not axis for axis in axes):
-        raise ValueError("finite axes need nonempty names")
-    if set(axes) != set(extents) or any(
-        type(size) is not int or size < 0 for size in extents.values()
-    ):
-        raise ValueError("each finite axis needs one nonnegative integer extent")
-    if len(set(output)) != len(output) or not set(output) <= set(axes):
-        raise ValueError("output axes must be distinct input axes")
-    sizes = tuple(prod(extents[axis] for axis in scope) for scope in scopes)
+    axes, sizes = _factor_geometry(scopes, output, extents)
     if any(
         len(factor.cells) != size for factor, size in zip(factors, sizes, strict=True)
     ):
         raise ValueError("finite factor cells do not match their axis extents")
-    initial = max((*sizes, prod(extents[axis] for axis in output)))
-    if initial > max_cells:
+    return _eliminate_factors(
+        module,
+        algebra,
+        scopes,
+        axes,
+        sizes,
+        output,
+        extents,
+        lambda: factors,
+        base_change=base_change,
+        max_checks=max_checks,
+        max_cells=max_cells,
+        fuel=fuel,
+    )
+
+
+def _require_pure_factors(
+    roots: tuple[NamedComputation, ...],
+    owners: Mapping[ComputationId, NamedComputation],
+) -> None:
+    """Reject effects in any factor body or transitive callee before evaluation.
+
+    Parameters
+    ----------
+    roots : tuple[NamedComputation, ...]
+        The named factor computations.
+    owners : Mapping[ComputationId, NamedComputation]
+        The checked definitions supplying their callees.
+
+    Raises
+    ------
+    FiniteLawUnsupported
+        If a reachable body has effects, static parameters or nonfinite terms.
+    """
+    pending = list(roots)
+    checked: set[ComputationId] = set()
+    while pending:
+        owner = pending.pop()
+        if owner.id in checked:
+            continue
+        checked.add(owner.id)
+        if owner.telescope or owner.type.effects != EMPTY_ROW:
+            raise FiniteLawUnsupported(
+                f"source factor reaches `{owner.name}` with effects or static parameters"
+            )
+        nodes: list[object] = [owner.body]
+        seen: set[int] = set()
+        while nodes:
+            node = nodes.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            if isinstance(node, (Perform, Handle, NewInstance)):
+                raise FiniteLawUnsupported(
+                    f"source factor reaches `{owner.name}` with an effect or handler"
+                )
+            nodes.extend(_children(node))
+        for parameter in owner.parameters:
+            _shape(parameter.type)
+        _shape(owner.type.result)
+        _check_body(owner.body)
+        pending.extend(owners[callee] for callee in called_computations(owner.body))
+
+
+def eliminate_finite_source(
+    module: QiecModule,
+    algebra: FiniteAlgebra,
+    factors: tuple[FiniteSourceFactor, ...],
+    output: tuple[str, ...],
+    *,
+    base_change: FiniteBaseChange | None = None,
+    max_checks: int = 65_536,
+    max_cells: int = 65_536,
+    max_source_cells: int = 65_536,
+    fuel: int = 65_536,
+) -> FiniteSourceEliminationResult:
+    """Eliminate finite factors defined by pure named QIEC computations.
+
+    The axis at each position has that parameter's exact finite type. A
+    repeated axis name denotes the same type and value order in every
+    factor. The compiler bounds the total source cells and every bag of
+    the proved elimination plan before asking the reference evaluator for
+    a factor cell. The last parameter varies fastest. Reachable requests,
+    including locally handled draws in computations with an empty row,
+    are refused before tabulation.
+
+    Parameters
+    ----------
+    module : QiecModule
+        The checked source defining the factors and algebra operations.
+    algebra : FiniteAlgebra
+        The nominal binary operations and identities of the input algebra.
+    factors : tuple[FiniteSourceFactor, ...]
+        The computations and their positional axis names, in product order.
+    output : tuple[str, ...]
+        The retained axes in output order. An empty tuple returns a scalar.
+    base_change : FiniteBaseChange or None
+        An optional checked map to a different finite answer algebra.
+    max_checks : int
+        Maximum operator entries and comparisons in the algebra proofs.
+    max_cells : int
+        Maximum area of any input, intermediate bag or factor, or output.
+    max_source_cells : int
+        Maximum total number of top-level source factor evaluations.
+    fuel : int
+        The reference step limit for each source or operator evaluation.
+
+    Returns
+    -------
+    FiniteSourceEliminationResult
+        The exact contraction and its distinctly counted source work.
+
+    Raises
+    ------
+    ValueError
+        If an axis, extent, output, bound, or parameter count is invalid.
+    FiniteLawUnsupported
+        If a computation has an unknown identity, an inconsistent axis
+        type, an inadmissible value, or reaches an effect.
+    FiniteLawLimit
+        If a proof, table, or evaluation exceeds a checked bound.
+    FiniteAlgebraLawError
+        If a required algebra law fails.
+    """
+    _validate_limit("max_cells", max_cells)
+    _validate_limit("max_source_cells", max_source_cells)
+    validate_module(module)
+    owners = {owner.id: owner for owner in module.computations}
+    if algebra.addition not in owners or any(
+        factor.computation not in owners for factor in factors
+    ):
+        raise FiniteLawUnsupported("unknown named factor or finite algebra operator")
+    roots = tuple(owners[factor.computation] for factor in factors)
+    carrier = owners[algebra.addition].type.result
+    shape = _shape(carrier)
+    axis_types: dict[str, TypeExpr] = {}
+    scopes = tuple(factor.axes for factor in factors)
+    for scope, owner in zip(scopes, roots, strict=True):
+        if owner.type.result != carrier:
+            raise FiniteLawUnsupported(
+                f"source factor `{owner.name}` has a different carrier"
+            )
+        if len(scope) != len(owner.parameters):
+            raise ValueError(
+                f"source factor `{owner.name}` needs one axis per parameter"
+            )
+        for axis, parameter in zip(scope, owner.parameters, strict=True):
+            if not isinstance(axis, str) or not axis:
+                raise ValueError("finite axes need nonempty names")
+            if axis_types.setdefault(axis, parameter.type) != parameter.type:
+                raise FiniteLawUnsupported(
+                    f"source factor axis {axis!r} has inconsistent types"
+                )
+    shapes = {axis: _shape(type_) for axis, type_ in axis_types.items()}
+    extents = {axis: _size(domain) for axis, domain in shapes.items()}
+    axes, sizes = _factor_geometry(scopes, output, extents)
+    needed = sum(sizes)
+    if needed > max_source_cells:
         raise FiniteLawLimit(
-            f"finite table needs {initial} cells, exceeding {max_cells}"
+            f"source factors need {needed} cells, exceeding {max_source_cells}"
+        )
+    _require_pure_factors(roots, owners)
+
+    def load_factors() -> tuple[FiniteFactor, ...]:
+        """Evaluate each checked factor once per cell in positional order.
+
+        Returns
+        -------
+        tuple[FiniteFactor, ...]
+            The actual observed factor values in written product order.
+
+        Raises
+        ------
+        FiniteLawLimit
+            If a source computation exhausts its evaluation fuel.
+        """
+        domains = {axis: _values(domain) for axis, domain in shapes.items()}
+        return tuple(
+            FiniteFactor(
+                scope,
+                tuple(
+                    _evaluate_finite(module, owner.name, point, shape, fuel)
+                    for point in product(*(domains[axis] for axis in scope))
+                ),
+            )
+            for scope, owner in zip(scopes, roots, strict=True)
         )
 
-    source = _tables(module, algebra, max_checks, fuel)
-    tables = source
-    image = tuple(range(len(source.values)))
-    proof = None
-    if base_change is not None:
-        count = len(source.values)
-        mapping_checks = count + 2 * count**2 + 2
-        remaining = max_checks - source.proof.checks - mapping_checks
-        if remaining < 1:
-            raise FiniteLawLimit(
-                f"finite base-change proof exceeds {max_checks} checks"
-            )
-        tables = _tables(module, base_change.target, remaining, fuel)
-        image = _prove_base_change(module, source, tables, base_change.mapping, fuel)
-        proof = FiniteBaseChangeProof(
-            source.proof,
-            tables.proof,
-            base_change.mapping,
-            source.proof.checks + tables.proof.checks + mapping_checks,
-        )
-    shape = _shape(source.proof.carrier)
-    steps = _elimination_steps(
-        scopes, output, axes, extents, tables.proof.noncommutative is None
+    result = _eliminate_factors(
+        module,
+        algebra,
+        scopes,
+        axes,
+        sizes,
+        output,
+        extents,
+        load_factors,
+        base_change=base_change,
+        max_checks=max_checks,
+        max_cells=max_cells,
+        fuel=fuel,
     )
-    largest = max(
-        (
-            initial,
-            *(
-                max(
-                    step.cells,
-                    prod(extents[axis] for axis in step.bag if axis != step.variable),
-                )
-                for step in steps
-            ),
-        )
-    )
-    if largest > max_cells:
-        raise FiniteLawLimit(f"finite bag needs {largest} cells, exceeding {max_cells}")
-    indices = {value: index for value, index in zip(source.values, image, strict=True)}
-    active = [
-        _IndexedFactor(
-            factor.axes,
-            tuple(indices[_observed(shape, value)] for value in factor.cells),
-        )
-        for factor in factors
-    ]
-    additions = multiplications = 0
-    for step in steps:
-        selected = tuple(active[index] for index in step.positions)
-        kept = tuple(axis for axis in step.bag if axis != step.variable)
-        value, work = _contract(tables, selected, kept, (step.variable,), extents)
-        additions += work.additions
-        multiplications += work.multiplications
-        _replace_factors(active, step.positions, value)
-    result, work = _contract(tables, tuple(active), output, (), extents)
-    factor = FiniteFactor(output, tuple(tables.values[index] for index in result.cells))
-    total = FiniteEliminationWork(
-        additions + work.additions, multiplications + work.multiplications
-    )
-    return FiniteEliminationResult(factor, tables.proof, steps, largest, proof, total)
+    return FiniteSourceEliminationResult(result, needed)
 
 
 __all__ = [
@@ -1007,6 +1337,9 @@ __all__ = [
     "FiniteEliminationStep",
     "FiniteEliminationWork",
     "FiniteFactor",
+    "FiniteSourceEliminationResult",
+    "FiniteSourceFactor",
     "check_finite_algebra",
     "eliminate_finite",
+    "eliminate_finite_source",
 ]

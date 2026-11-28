@@ -904,12 +904,13 @@ with $s$ assignments and $f$ selected factors, contraction executes $s$
 sum-table lookups and $sf$ product-table lookups. The total counters
 include the final product on the output axes. Reading each factor cell
 also takes work proportional to its arity to form its index. This
-contract starts from explicit factors. Deriving those factors from an
-effectful program requires a separate justification.
+contract on explicit factors assumes that their cells are already given.
 
 ```python
 from quivers.dsl import Compiler, parse
-from quivers.qiec import FiniteAlgebra, FiniteFactor, eliminate_finite
+from quivers.qiec import (
+    FiniteAlgebra, FiniteFactor, FiniteSourceFactor, eliminate_finite, eliminate_finite_source,
+)
 
 source = """
 define add(a : Bool, b : Bool) : Bool !{} =
@@ -923,6 +924,18 @@ define multiply(a : Bool, b : Bool) : Bool !{} =
         return b
     else
         return false
+
+define indicator(a : Bool) : Bool !{} =
+    return a
+
+define negate(a : Bool) : Bool !{} =
+    if a then
+        return false
+    else
+        return true
+
+define unit() : Bool !{} =
+    return true
 """
 module = Compiler(parse(source), module_name="boolean-elimination").qiec_module
 assert module is not None
@@ -938,6 +951,32 @@ assert answer.factor.cells == (False, True)
 assert answer.steps[0].positions == (0, 2)
 assert answer.work.additions == 4
 assert answer.work.multiplications == 8
+```
+
+`eliminate_finite_source` derives factor cells from named checked QIEC
+computations. Each axis takes the exact type of its parameter and has
+the same type in every factor that names it. Booleans order false before
+true, unit has one value, and products order lexicographically. The last
+parameter varies fastest. Source bodies and their transitive callees
+must be pure finite computations. A local handler can close the type's
+effect row while leaving a draw in its body, so the checker examines the
+reachable bodies before it builds any table.
+
+The planner checks source cell counts, factor areas and intermediate
+bag areas before evaluating the factors. `source_evaluations` counts
+one reference evaluation per source cell. `result.work` counts the
+operator table lookups used to contract those cells. Continuing the
+example, two unary factors and one constant require five evaluations.
+
+```python
+source_factors = (
+    FiniteSourceFactor(("x",), ids["negate"]),
+    FiniteSourceFactor(("y",), ids["indicator"]),
+    FiniteSourceFactor((), ids["unit"]),
+)
+compiled = eliminate_finite_source(module, algebra, source_factors, ("y",))
+assert compiled.result.factor.cells == (False, True)
+assert compiled.source_evaluations == 5
 ```
 
 ### Change of base
