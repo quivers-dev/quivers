@@ -826,7 +826,39 @@ program assess(first : String, last : String, yes : Real, no : Real) : Word -> W
     score response = log(likelihood)
     return response
 
+define read_network() : Tensor[Real]([4]) !{params} =
+    perform params.get[Tensor[Real]([4])]("response.network")
+
+define neural_score(feature : Real, theta : Tensor[Real]([4])) : Real !{} =
+    return sigmoid(theta[0] + theta[1] * tanh(theta[2] + theta[3] * feature))
+
+define neural_response(proved : Bool, theta : Tensor[Real]([4])) : Real !{} =
+    if proved then
+        neural_score(1.0, theta)
+    else
+        neural_score(-1.0, theta)
+
+define neural_mass(rows : Reading__Outcomes, theta : Tensor[Real]([4])) : Real !{} =
+    case rows motive => Real
+        Reading__outcome_end =>
+            return 0.0
+        Reading__outcome_entry(form, log_weight, tail) =>
+            let claim <- to_claim(form)
+            let proved <- Prover__run[1]([claim], [true])
+            let probability <- neural_response(proved, theta)
+            let remaining <- neural_mass(tail, theta)
+            return remaining + exp(log_weight) * probability
+
+program assess_neural(first : String, last : String, response : Bool) : Word -> Weight
+    let sentence <- pack_tokens(first, last)
+    let readings = parse_normalized_outcomes(Reading, sentence, "form")
+    let theta <- read_network()
+    let probability <- neural_mass(readings, theta)
+    observe response <- Bernoulli(probs=probability)
+    return probability
+
 export assess
+export assess_neural
 ```
 
 The likelihood sums the reading probabilities weighted by `yes` when the
@@ -849,6 +881,15 @@ qvr run weighted_parser_prover.qvr assess \
 This example uses a pure typed adapter and Boolean deduction. Typed rule
 interpretations with effects require a separate account of what each rule
 does and which uses of its result may share an effect.
+
+`assess_neural` uses the same parser and prover to compute the response
+probability. The prover's result determines the input to a one-hidden-unit
+network with the four parameters named `response.network`. The program
+reads them once through `Param` and observes a Boolean response under the
+mixture of the network's predictions over readings. Differentiating its
+log joint reaches both the lexical weights and the network parameters.
+Supply the parameter values by name to
+[`run_program`][quivers.qiec.program_runtime.run_program].
 
 ## Schema export
 
