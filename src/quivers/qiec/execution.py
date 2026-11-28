@@ -2494,11 +2494,12 @@ def _core_validator(type_: TypeExpr) -> RuntimeValidator | None:
         return lambda value: isinstance(value, str)
     if isinstance(type_, TypeApplication):
         if type_.constructor == SAMPLEABLE_CONSTRUCTOR:
+            from quivers.qiec.relation_path_law import RelationPathLaw
             from quivers.qiec.structured_sampleables import FiniteSampleable
 
             return lambda value: (
                 value.element == type_.arguments[0]
-                if isinstance(value, FiniteSampleable)
+                if isinstance(value, FiniteSampleable | RelationPathLaw)
                 else callable(getattr(value, "log_prob", None))
                 and (
                     callable(getattr(value, "sample", None))

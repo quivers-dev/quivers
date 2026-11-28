@@ -1384,11 +1384,12 @@ def _site_and_sampleable(
         if the site is not hashable and so cannot key an observation
         or replay table.
     """
+    from quivers.qiec.relation_path_law import RelationPathLaw
     from quivers.qiec.structured_sampleables import FiniteSampleable
 
     site, sampleable = _expect_arguments(request, 2, handler)
     if (
-        isinstance(sampleable, FiniteSampleable)
+        isinstance(sampleable, FiniteSampleable | RelationPathLaw)
         and sampleable.element != request.core.result_type
     ):
         raise RuntimeTypeMismatch(

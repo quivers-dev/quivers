@@ -13,7 +13,7 @@ from typing import cast
 import torch
 from torch import nn
 
-from quivers.core.algebras import REAL, Semiring
+from quivers.core.algebras import LOG_PROB, MARKOV, REAL, Semiring
 from quivers.core.morphisms import FiniteMorphism, Morphism
 from quivers.core.objects import FreeMonoid, ProductSet, SetObject, Unit
 from quivers.core.relations.paths import (
@@ -21,6 +21,9 @@ from quivers.core.relations.paths import (
     PathStatistics,
     RelationPath,
     _PathWalks,
+    _markov_log_weights,
+    _probability_algebra,
+    _require_normalizer,
 )
 from quivers.core.relations.queries import (
     ProductiveEpsilonCycleError,
@@ -500,6 +503,44 @@ class FixedStringQuery:
         if type(k) is not int or k < 0:
             raise ValueError("k must be a nonnegative integer")
         return self._walks.k_best(k, self._relation._weights(), self._relation.algebra)
+
+    @property
+    def max_path_length(self) -> int | None:
+        """Return the maximum arc count over structurally accepting paths.
+
+        The productive graph must be acyclic. A graph without accepting
+        paths has no maximum. The bound includes paths whose current
+        weights are zero, since subsequent weight changes may enable them.
+        """
+        return self._walks.max_path_length
+
+    def path_log_prob(
+        self, initial_state: int, arc_ids: tuple[int, ...], final_state: int
+    ) -> torch.Tensor:
+        """Score an original trace under the fixed-word path posterior.
+
+        The trace supplies its original initial state, ordered arc
+        occurrence IDs, and original final state. Invalid or zero-weight
+        traces have log probability negative infinity. The observed path
+        mass must be positive and finite. The positive trace score and
+        the normalizer use the same current weight source.
+        """
+        log_weights = self._log_path_weights()
+        total = self._path_log_normalizer(log_weights)
+        return self._walks.path_log_prob(
+            self._words, initial_state, arc_ids, final_state, log_weights, total
+        )
+
+    def _path_log_normalizer(self, log_weights: torch.Tensor) -> torch.Tensor:
+        total = self._plan.evaluate(log_weights, LOG_PROB)
+        _require_normalizer(total, LOG_PROB)
+        return total
+
+    def _log_path_weights(self, *, dtype: torch.dtype | None = None) -> torch.Tensor:
+        weights = self._relation._weights()
+        algebra = _probability_algebra(weights, self._relation.algebra)
+        weights = weights if dtype is None else weights.to(dtype=dtype)
+        return _markov_log_weights(weights) if algebra is MARKOV else weights
 
     def sample_path(
         self, *, generator: torch.Generator | None = None, max_steps: int | None = None

@@ -2745,10 +2745,14 @@ class Evaluator:
                 natural=natural,
             )
         if isinstance(value, LogMass):
+            from quivers.qiec.relation_path_law import RelationPathLaw
             from quivers.qiec.structured_sampleables import FiniteSampleable
 
             sampleable = self._value(value.sampleable, environment)
-            if not isinstance(sampleable, RuntimeDistribution | FiniteSampleable):
+            if not isinstance(
+                sampleable,
+                RuntimeDistribution | FiniteSampleable | RelationPathLaw,
+            ):
                 raise EvaluationError(
                     "log_mass was given a runtime value with no measure mass"
                 )
@@ -2757,10 +2761,14 @@ class Evaluator:
             except (ArithmeticError, ValueError) as error:
                 raise EvaluationError(f"log_mass failed: {error}") from error
         if isinstance(value, LogDensity):
+            from quivers.qiec.relation_path_law import RelationPathLaw
             from quivers.qiec.structured_sampleables import FiniteSampleable
 
             sampleable = self._value(value.sampleable, environment)
-            if not isinstance(sampleable, RuntimeDistribution | FiniteSampleable):
+            if not isinstance(
+                sampleable,
+                RuntimeDistribution | FiniteSampleable | RelationPathLaw,
+            ):
                 raise EvaluationError(
                     "log_prob was given a runtime value with no log density"
                 )
