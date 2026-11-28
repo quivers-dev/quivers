@@ -1,4 +1,4 @@
-"""Auto-intersection when productive cycles have zero signed tape delay."""
+"""Bounded tape equality when productive paths do not mix cycle signs."""
 
 from __future__ import annotations
 
@@ -14,9 +14,51 @@ type _Buffer = tuple[int, ...]
 type _State = tuple[int, _Buffer, _Buffer]
 
 
-def _require_balanced_cycles(
-    topology: RelationTopology, first: int, second: int
-) -> None:
+def _balanced(rows: list[list[tuple[int, int]]], members: set[int], start: int) -> bool:
+    potential = {start: 0}
+    agenda = [start]
+    for source in agenda:
+        for target, shift in rows[source]:
+            if target not in members:
+                continue
+            expected = potential[source] + shift
+            if target not in potential:
+                potential[target] = expected
+                agenda.append(target)
+            elif potential[target] != expected:
+                return False
+    return True
+
+
+def _negative_cycle(
+    component: tuple[int, ...],
+    edges: list[tuple[int, int, int]],
+    direction: int,
+    remaining: int,
+) -> tuple[bool, int]:
+    # A zero-distance virtual source reaches every vertex. An update
+    # during the nth pass witnesses a negative cycle of this sign.
+    distance = dict.fromkeys(component, 0)
+    for _ in component:
+        remaining -= len(edges)
+        if remaining < 0:
+            raise RelationLimitError(
+                "auto-intersection cycle analysis exceeds max_work"
+            )
+        changed = False
+        for source, target, shift in edges:
+            candidate = distance[source] + direction * shift
+            if candidate < distance[target]:
+                distance[target] = candidate
+                changed = True
+        if not changed:
+            return False, remaining
+    return True, remaining
+
+
+def _certify_delay(
+    topology: RelationTopology, first: int, second: int, remaining: int
+) -> tuple[int, int]:
     states = dict.fromkeys(
         (
             *(mark.state for mark in topology.initial),
@@ -27,33 +69,52 @@ def _require_balanced_cycles(
     indexes = {state: i for i, state in enumerate(states)}
     rows: list[list[tuple[int, int]]] = [[] for _ in states]
     reverse: list[list[int]] = [[] for _ in states]
-    for arc_id, arc in enumerate(topology.arcs):
+    for arc in topology.arcs:
         source, target = indexes[arc.source], indexes[arc.target]
-        rows[source].append((target, arc_id))
+        shift = (arc.labels[first] is not None) - (arc.labels[second] is not None)
+        rows[source].append((target, shift))
         reverse[target].append(source)
 
-    for component in _components(
-        list(map(tuple, rows)), reverse, set(range(len(states)))
-    ):
+    components = tuple(
+        _components(list(map(tuple, rows)), reverse, set(range(len(states))))
+    )
+    component_of = {
+        state: index
+        for index, component in enumerate(components)
+        for state in component
+    }
+    previous = [0] * len(components)
+    for index, component in enumerate(components):
         members = set(component)
-        potential = {component[0]: 0}
-        agenda = [component[0]]
-        for source in agenda:
-            for target, arc_id in rows[source]:
-                if target not in members:
-                    continue
-                arc = topology.arcs[arc_id]
-                shift = (arc.labels[first] is not None) - (
-                    arc.labels[second] is not None
-                )
-                expected = potential[source] + shift
-                if target not in potential:
-                    potential[target] = expected
-                    agenda.append(target)
-                elif potential[target] != expected:
-                    raise ValueError(
-                        "auto-intersection requires zero tape delay on every productive cycle"
-                    )
+        local = 0
+        if not _balanced(rows, members, component[0]):
+            edges = [
+                (state, target, shift)
+                for state in component
+                for target, shift in rows[state]
+                if target in members
+            ]
+            negative, remaining = _negative_cycle(component, edges, 1, remaining)
+            positive, remaining = _negative_cycle(component, edges, -1, remaining)
+            local = int(positive) | (int(negative) << 1)
+        # Opposite signs in a neutral component's ancestors can be on
+        # exclusive branches. Only a signed current component can
+        # combine a preceding sign with its opposite on the same path.
+        seen = local | previous[index]
+        if local and seen == 3:
+            raise ValueError(
+                "auto-intersection refuses productive paths with both positive and negative cycle delays"
+            )
+        for state in component:
+            for target, _ in rows[state]:
+                if (successor := component_of[target]) != index:
+                    previous[successor] |= seen
+
+    # Remove cycles independently from any prefix and its suffix.
+    # Both simple remainders have length at most Q-1. All removed
+    # nonzero cycles along one accepting path have the same sign.
+    # A zero total then bounds the original prefix on both sides.
+    return max(0, len(states) - 1), remaining
 
 
 def auto_intersect(
@@ -66,13 +127,14 @@ def auto_intersect(
 ) -> RationalRelation:
     """Keep only paths realizing the same word on two same-type tapes.
 
-    The tapes and primitive weight sources stay in place. Each productive
-    cycle must have zero signed difference in its emitted tape lengths.
+    The tapes and primitive weight sources stay in place. Productive
+    paths may pass through cycles with nonzero signed length difference
+    of a common sign. Opposite signs on the same path are refused.
     The resulting finite graph tracks the suffix of whichever tape is
     ahead. Every created arc consumes exactly one original occurrence.
 
-    After structural trimming and the cycle check, the limits bound the
-    reached residual configurations and examined arc occurrences.
+    After structural trimming, the limits bound the reached residual
+    configurations, signed relaxations, and examined arc occurrences.
     """
     topology = relation.topology
     if (
@@ -89,9 +151,9 @@ def auto_intersect(
         raise ValueError("auto-intersection requires explicit state and work limits")
     _validate_limits(max_states, max_work)
     topology = trim(relation).topology
-    _require_balanced_cycles(topology, first, second)
     if len(topology.initial) > max_states:
         raise RelationLimitError("auto-intersection exceeds max_states")
+    delay, remaining = _certify_delay(topology, first, second, max_work)
     native: dict[int, list[Arc]] = defaultdict(list)
     for arc in topology.arcs:
         native[arc.source].append(arc)
@@ -101,17 +163,18 @@ def auto_intersect(
     initial = tuple(Boundary(i, mark.weight) for i, mark in enumerate(topology.initial))
     final: list[Boundary] = []
     arcs: list[Arc] = []
-    work = 0
     for source, (state, a, b) in enumerate(states):
         if not a and not b and (slot := topology._final_slots.get(state)) is not None:
             final.append(Boundary(source, slot))
         for arc in native.get(state, ()):
-            if work == max_work:
+            if remaining == 0:
                 raise RelationLimitError("auto-intersection exceeds max_work")
-            work += 1
+            remaining -= 1
             left, right = arc.labels[first], arc.labels[second]
             a_suffix = a if left is None else (*a, left)
             b_suffix = b if right is None else (*b, right)
+            if abs(len(a_suffix) - len(b_suffix)) > delay:
+                continue
             common = min(len(a_suffix), len(b_suffix))
             if a_suffix[:common] != b_suffix[:common]:
                 continue

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Signed-delay tape equality.** A wider bounded-delay certificate permits productive cycles of a common sign along each accepting path, with exact refusals for mixed cyclic drift and unchanged original path weights.
 - **Checked sparse posterior path laws.** Fixed-word requests bind typed path posteriors for Random draws, replay, and differentiable trace scoring with original arc identities.
 - **Checked alignment-marginal ranking requests.** Serialize an explicit candidate set and sparse query limits for the exact alignment-sum objective, with a live selected log score.
 - **Serializable string solver configurations.** The same typed graph can be solved with exact acyclic local decoders for alignment MAP or approximate regular expectation propagation. Solver records preserve their distinct objectives, limits, and reference-language settings.

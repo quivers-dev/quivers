@@ -150,22 +150,31 @@ erasing the labels exposes a productive cycle, the caller supplies a
 closure limit and the algebra checks convergence in its domain.
 
 `auto_intersect` keeps paths whose words agree on two tapes of the same
-type. It checks a sufficient condition for bounded delay after
-trimming. Within each productive strongly connected component, each
-arc's difference in emitted tape lengths must equal the difference of
-an integer state potential. This exactly checks for zero net delay on
-each cycle in that component. Removing closed walks from a path
-prefix leaves its delay unchanged, so the length difference is bounded
-by the number of productive states minus one.
+type. After trimming, it checks whether any accepting path can encounter
+both a positive and a negative cycle in the signed tape-length difference.
+A state-potential check recognizes zero-drift strongly connected
+components in linear time. For other components, signed relaxations
+detect positive and negative cycles. Their signs propagate along the
+component graph. Opposite signs on separate accepting branches are
+allowed.
 
-The checked graph records only the unmatched suffix on the tape ahead.
-Each transition appends the two original labels, removes their common
-prefix and refuses a mismatch. An accepting path must have no
-unmatched suffix. The projection to the original arcs is bijective
-on paths with identical selected words, so parallel weights and
-derivatives are preserved. A reached configuration takes space linear
-in its suffix length. The work limit counts examined arcs after trimming and the linear
-cycle check. Building the indexes has the usual topology costs.
+Consider a prefix of an accepting path whose tape lengths agree at
+the end. Remove cycles independently from that prefix and its suffix.
+Their simple remainders each have length at most the number of
+productive states minus one. Since all removed cycles have one
+common sign or zero delay, each remainder bounds the original
+delay from one side. The prefix and suffix delays sum to zero,
+so the prefix's absolute delay is bounded by that same state count
+minus one.
+
+The checked graph records the unmatched suffix on the tape ahead.
+Each transition appends the original labels, cancels their common
+prefix, and rejects a mismatch or delay beyond the certified bound.
+An accepting path has no unmatched suffix. Projection to the
+original arcs is bijective on paths with identical selected words,
+preserving shared weights and derivatives. The work limit includes
+signed relaxations and examined product arcs. The state-bound
+certificate is independent of the current weights.
 
 `RationalRelation.conditional` fixes all input tapes and compiles a
 normalizer over every output word tuple. `ConditionalStringQuery.log_prob`
