@@ -864,13 +864,19 @@ _SPAN_PARAMETERS = (
 
 SPAN_WORK = ComplexityClaim(
     query="value of every category over every span of a presentation in span form",
-    parameters=_SPAN_PARAMETERS,
+    parameters=(
+        *_SPAN_PARAMETERS,
+        ComplexityParameter(
+            name="M",
+            meaning="largest closure order, with auxiliary states for parallel unary steps",
+        ),
+    ),
     model=ALGEBRA_OPERATIONS,
     bounds=(
         ComplexityBound(
             phase=Phase.EXECUTION,
             resource="time",
-            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + n (R + N^3) + Z N^3 + C",
+            expression="P n^3 + R n^2 + N^2 n^2 + M^3 + n (R + M^3) + Z M^3 + C",
             status=Unresolved(
                 obligation=(
                     "for real weights the inside values are ring computations, so "
@@ -884,19 +890,19 @@ SPAN_WORK = ComplexityClaim(
         ComplexityBound(
             phase=Phase.EXECUTION,
             resource="space",
-            expression="N n^2 + P n^2 + R n + N^2",
+            expression="N n^2 + P n^2 + R n + M^2",
             status=Unresolved(obligation="as for time"),
         ),
         ComplexityBound(
             phase=Phase.DIFFERENTIATION,
             resource="time",
-            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + n (R + N^3) + Z N^3 + C",
+            expression="P n^3 + R n^2 + N^2 n^2 + M^3 + n (R + M^3) + Z M^3 + C",
             status=Unresolved(obligation="as for execution"),
         ),
         ComplexityBound(
             phase=Phase.DIFFERENTIATION,
             resource="space",
-            expression="P n^3 + R n^2 + N^2 n^2 + N^3 + n (R + N^3) + Z N^3",
+            expression="P n^3 + R n^2 + N^2 n^2 + M^3 + n (R + M^3) + Z M^3",
             status=Unresolved(
                 obligation="the autograd tape holds every product of every length"
             ),
@@ -922,6 +928,8 @@ SPAN_WORK = ComplexityClaim(
         "own; one reading the span masks its rule",
         "the unary closure is the algebra's star when the unary rules have a "
         "cycle and a sum in topological order of N^3 operations otherwise",
+        "in a logarithmic star, retain each parallel unary step as a separate "
+        "matrix entry by inserting one auxiliary state per extra step",
         "inputs over empty spans make categories nullable: their weights at each "
         "position solve a polynomial system by components, acyclic or linear by "
         "the star, and a binary rule with an empty premise is a step of its cell "
@@ -2183,6 +2191,11 @@ def plan(
         else "autograd"
     )
     span, declined = _span_form(query, presentation, retention, recursion, backward)
+    if span is not None and cyclic and budget != UNLIMITED:
+        raise PlanRefused(
+            PlanRefusal.INADMISSIBLE,
+            "the cyclic span executor does not enforce a general resource budget",
+        )
     recognizes = (
         span is not None
         and isinstance(query.observable, Support)

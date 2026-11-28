@@ -8,8 +8,9 @@ from dataclasses import dataclass
 import torch
 
 from quivers.core.algebras import Semiring, Star
+from quivers.core._closure_block import _ClosureBlock, _make_block
 from quivers.core.laws import SEMIRING_LAWS, STAR_LEAST_SOLUTION
-from quivers.core.relations._cyclic import _ClosureBlock, _components, _make_block
+from quivers.core.relations._cyclic import _close_block, _components
 from quivers.core.relations._packed import _PackedPaths, _pack_paths
 from quivers.core.relations.topology import EPSILON, RelationTopology, Words
 
@@ -62,7 +63,7 @@ class _PathPlan:
                 raise TypeError(
                     "productive epsilon closure requires floating-point weights"
                 )
-            closed = [block.evaluate(weights, algebra) for block in self.closures]
+            closed = [_close_block(block, weights, algebra) for block in self.closures]
             weights = torch.cat((weights, *closed))
         return self.packed.evaluate(weights, algebra, visits=visits)
 
