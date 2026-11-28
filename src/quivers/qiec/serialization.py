@@ -128,6 +128,7 @@ from quivers.qiec.effect_law_schema import (
 from quivers.qiec.derivative_rule_schema import RationalDerivativeDeclaration
 from quivers.qiec.handler_interchange import FiniteHandlerInterchange
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
+from quivers.qiec.finite_ep_runtime import FiniteStringEPRequest
 from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
 from quivers.qiec.relation_cascades import RelationCascadeSpec, RelationCascadeStep
@@ -447,6 +448,7 @@ _NODE_CLASSES = (
     RegularStringEPPolicy,
     TreeStringGraphRequest,
     RegularStringEPRequest,
+    FiniteStringEPRequest,
     # source identity and kinds
     SourceOrigin,
     DynamicAddressFrame,

@@ -130,7 +130,7 @@ class RegularStringEPRequest(QiecModel):
         -------
         TypeExpr
             Status, reason, accepted sweeps, residual presence and value,
-            belief presence, log probabilities, and attempted local fits.
+            belief presence, log probabilities, and fit attempts in the final pass.
         """
         size = IndexLiteral(value=len(self.words), sort=NAT)
         return product_type(

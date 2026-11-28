@@ -898,3 +898,79 @@ torch.testing.assert_close(scores.exp(), torch.tensor([0.5, 0.0], dtype=torch.fl
 ::: quivers.qiec.regular_ep_runtime.RegularStringEPRequest
 
 ::: quivers.qiec.regular_ep_runtime.RegularStringEPRuntimeProvider
+
+The regular report's final integer counts local fit attempts in the
+final pass. The Python result separately records moment evaluations
+across all attempted sweeps.
+
+## Checked finite-unrolled string EP
+
+`FiniteStringEPRequest` gives an authored string graph an explicit
+finite word support on each variable and a fixed number of accepted
+synchronous sweeps. The provider reuses the finite-support EP solver
+with an unpenalized unigram family and float64 weights. The full tilt
+must have positive probability at every declared support word in the
+working precision. Each observed-pair factor query requires an acyclic
+productive path graph. Observed variables restrict their support to
+the observed word.
+
+Each call evaluates the original live factor tables. The provider reuses
+the table topology and affine bases. The finite solver
+forms normalized cavities, fits an inclusive-KL unigram projection by
+Newton steps, and divides the fitted marginal by the cavity to get its
+site message. Damping interpolates old and proposed log sites. An
+optional warm initialization gives finite coefficients in exact factor,
+variable, and affine-basis order. These are initial sites for the
+requested computation.
+
+The checked handler identity binds the graph, ordered supports and
+probes, warm sites, sweep count, damping, and local optimizer settings.
+The graph and feature resource caps can tighten for the same finite
+program. A successful report has status `completed`, its accepted
+sweep count, the final undamped residual, a score-availability flag,
+the ordered log probabilities, and `Tensor[Int]([3])`. The three
+cumulative counts cover local fit attempts, accepted Newton steps,
+and line-search trials, including the final diagnostic pass. An
+ordered probe off the declared support has log weight negative
+infinity. A local fit failure makes the requested report unavailable
+and records its accepted sweep count and work through the failure.
+Graph and feature exhaustion and unsupported closure have their own
+statuses.
+
+Autodiff follows the executed finite program, including the accepted
+Newton and damping updates. Stopping and trial selection are discrete
+tests in working precision. The derivative applies along the branch
+selected by those tests. A branch with zero accepted local iterations
+can give a constant score with respect to its factor. Completion
+reports the requested number of sweeps. Converged-solution,
+fixed-point, and certified global error guarantees are outside this
+report's domain. A target that lacks the native handler reports that
+capability boundary.
+
+### Work and storage bounds
+
+Table construction charges cumulative entries, visited states, and
+candidate arcs over the explicit factor supports. Derived factor
+construction applies the state and work bounds per transform. For a
+variable with $N$ supported words, $D$ distinct unigrams and affine
+rank $r\leq\min(N-1,D)$, the feature cap charges $ND$ cells after
+any observation restriction. Unigram counting scans the word tokens,
+the exact affine-basis selection uses $O(DN(1+r))$ rational operations
+on the count matrix, and the fit stores $O(Nr+r^2+N)$ tensor entries
+per step, apart from the existing factor table and cavity tensors.
+
+A fit forms its dense local covariance in $O(Nr^2)$ work and solves
+the Newton system in $O(r^3)$ work. Each line-search trial costs
+$O(N(r+1))$. Factor-to-variable messages reduce the declared dense
+factor table once per outgoing axis. If the graph has $A$ factor-argument
+sites, $S$ fixed sweeps admit at most $(S+1)A$ local fits. The final
+pass checks updates at the returned state. With $P$ accepted-step
+slots and $B$ backtracks allowed per step, there are at most
+$(S+1)AP$ accepted updates and $(S+1)AP(B+1)$ trials. Backward retains
+the accepted finite trajectory and factor-table evaluation. The
+domain and these limits bound tensor sizes and operation counts
+separately from backend memory use and rational integer bit cost.
+
+::: quivers.qiec.finite_ep_runtime.FiniteStringEPRequest
+
+::: quivers.qiec.finite_ep_runtime.FiniteStringEPRuntimeProvider

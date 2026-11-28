@@ -100,7 +100,11 @@ def _centered_log_moment(
 
 @dataclass(frozen=True, slots=True)
 class NgramProjection:
-    """An inclusive KL projection and its local optimizer diagnostics."""
+    """An inclusive KL projection and its local optimizer diagnostics.
+
+    Iterations count accepted Newton updates. Line-search trials include
+    rejected candidates and any terminal stalled search.
+    """
 
     status: Literal["converged", "limit", "stalled"]
     iterations: int
@@ -110,6 +114,7 @@ class NgramProjection:
     fitted_moments: torch.Tensor
     moment_residual: float
     divergence: torch.Tensor
+    line_search_trials: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +228,7 @@ class NgramFamily:
         logits = base
         status: Literal["converged", "limit", "stalled"] = "limit"
         iteration = 0
+        line_search_trials = 0
         while True:
             log_prob = logits.log_softmax(dim=0)
             prob = log_prob.exp()
@@ -245,6 +251,7 @@ class NgramFamily:
                 status = "stalled"
                 break
             for backtrack in range(max_backtracks + 1):
+                line_search_trials += 1
                 step = 2.0**-backtrack
                 proposed = coefficients - step * direction
                 update = base + features @ proposed
@@ -273,6 +280,7 @@ class NgramFamily:
             fit,
             error,
             target @ (target_log_prob - log_prob),
+            line_search_trials,
         )
 
     def project_penalized(
