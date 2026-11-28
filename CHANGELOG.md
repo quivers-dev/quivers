@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Checked sparse posterior path laws.** Fixed-word requests bind typed path posteriors for Random draws, replay, and differentiable trace scoring with original arc identities.
 - **Checked alignment-marginal ranking requests.** Serialize an explicit candidate set and sparse query limits for the exact alignment-sum objective, with a live selected log score.
 - **Serializable string solver configurations.** The same typed graph can be solved with exact acyclic local decoders for alignment MAP or approximate regular expectation propagation. Solver records preserve their distinct objectives, limits, and reference-language settings.
+- **Checked unary sparse relation transformations.** Serialized requests apply projection, conditioning, inversion, trimming, and closure to original typed relations and score the resulting words with live weights.
 - **Checked QIEC composition requests.** A wire record preserves both original sparse operand topologies and their shared weight identities, with explicit lazy or materialized execution.
 - **Checked best-path weight.** Serialized fixed-relation requests can score the highest-weight alignment of observed words with exact acyclic ranking and a deterministic tie derivative.
 - **Authored sparse relation composition.** QVR authors can compose two typed primitive relations and request a checked pair weight over the outer tape words.

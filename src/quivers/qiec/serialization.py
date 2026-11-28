@@ -124,6 +124,10 @@ from quivers.qiec.relation_composition import (
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
 from quivers.qiec.relation_path_law import FixedRelationPathSampleRequest
+from quivers.qiec.relation_transforms import (
+    FixedTransformedRelationRequest,
+    UnaryRelationTransformSpec,
+)
 from quivers.qiec.relations import (
     FixedRelationArcCountsRequest,
     FixedRelationCostRequest,
@@ -354,6 +358,8 @@ _NODE_CLASSES = (
     FamilyParameter,
     FamilyShapeSignature,
     ComposedRelationSpec,
+    UnaryRelationTransformSpec,
+    FixedTransformedRelationRequest,
     FixedComposedRelationRequest,
     FixedRelationArcCountsRequest,
     FixedRelationCostRequest,

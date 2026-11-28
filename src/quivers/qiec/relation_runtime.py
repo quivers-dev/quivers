@@ -23,6 +23,10 @@ from quivers.qiec.relation_composition import (
     FixedComposedRelationRequest,
 )
 from quivers.qiec.relation_marginal_map import FixedRelationMarginalMapRequest
+from quivers.qiec.relation_transforms import (
+    FixedTransformedRelationRequest,
+    UnaryRelationTransformSpec,
+)
 from quivers.qiec.relations import (
     FixedRelationArcCountsRequest,
     FixedRelationCostRequest,
@@ -39,7 +43,10 @@ def _relation_score_handler_id(
     module: str,
     name: str,
     operation: str,
-    relation: RationalRelationSpec | ComposedRelationSpec | None = None,
+    relation: RationalRelationSpec
+    | ComposedRelationSpec
+    | UnaryRelationTransformSpec
+    | None = None,
 ) -> HandlerId:
     """Derive the checked handler identity of a source score.
 
@@ -153,7 +160,7 @@ class FixedRelationRuntimeProvider:
 
     Parameters
     ----------
-    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest
+    request : FixedRelationRequest or FixedRelationCostRequest or FixedComposedRelationRequest or FixedRelationMarginalMapRequest or FixedRelationArcCountsRequest or FixedTransformedRelationRequest
         The checked fixed observation, objective, and resource limits.
     parameters : Mapping[ParameterId, torch.Tensor]
         The live scalar tensors supplying the request's weight identities.
@@ -169,7 +176,8 @@ class FixedRelationRuntimeProvider:
         | FixedRelationCostRequest
         | FixedRelationArcCountsRequest
         | FixedComposedRelationRequest
-        | FixedRelationMarginalMapRequest,
+        | FixedRelationMarginalMapRequest
+        | FixedTransformedRelationRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
         *,
         handler_name: str,
@@ -186,7 +194,9 @@ class FixedRelationRuntimeProvider:
             else ()
         )
         self._score: Callable[[], torch.Tensor]
-        if isinstance(request, FixedComposedRelationRequest):
+        if isinstance(
+            request, FixedComposedRelationRequest | FixedTransformedRelationRequest
+        ):
             self._score = request.plan(parameters).weight
             return
         relation = request.relation.bind(parameters)
@@ -251,7 +261,8 @@ class FixedRelationRuntimeProvider:
         | FixedRelationCostRequest
         | FixedRelationArcCountsRequest
         | FixedComposedRelationRequest
-        | FixedRelationMarginalMapRequest,
+        | FixedRelationMarginalMapRequest
+        | FixedTransformedRelationRequest,
         parameters: Mapping[ParameterId, torch.Tensor],
     ) -> FixedRelationRuntimeProvider:
         """Bind a fixed request to a source-declared relation score.
