@@ -1239,10 +1239,15 @@ def _qvr_qiec_handle(
                 value,
                 "handler operation result type",
             )
-            resumed = _qvr_qiec_with_ambient(
-                controller,
-                lambda: walk(_qvr_qiec_readdress(current[2](value), shot), carried),
-            )
+
+            def continue_resumed():
+                continuation = current[2](value)
+                # Affine and linear captures keep the existing shot path.
+                if grade == "omega":
+                    continuation = _qvr_qiec_readdress(continuation, shot)
+                return walk(continuation, carried)
+
+            resumed = _qvr_qiec_with_ambient(controller, continue_resumed)
             return resumed[1] if resumed[0] == "pure" else resumed
 
         clause_lifecycle = lifecycle_ref[0]

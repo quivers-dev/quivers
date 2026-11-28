@@ -81,16 +81,22 @@ def _qvr_qiec_native_operations(
 ):
     # The program's canonical instances handled by the host's own
     # primitives, so a computation the model calls draws and scores as
-    # the model does.
+    # the model does. The helper's request address is trace metadata;
+    # the public Pyro name still comes from the site's label.
     name = _qvr_qiec_site_names()
 
     def sample(request):
         label, distribution = request["arguments"]
-        return pyro.sample(name(label), distribution)
+        return pyro.sample(
+            name(label), distribution, infer={"qiec_address": request["address"]}
+        )
 
     def add(request):
         (weight,) = request["arguments"]
-        pyro.factor(name("score"), _qvr_qiec_array(weight))
+        with pyro.poutine.infer_config(
+            config_fn=lambda _: {"qiec_address": request["address"]}
+        ):
+            pyro.factor(name("score"), _qvr_qiec_array(weight))
         return None
 
     return {

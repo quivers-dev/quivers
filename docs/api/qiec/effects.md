@@ -662,6 +662,27 @@ plan before comparing the receipt. For a program, that plan needs the
 compiler's parsed source. Native JVP and law checks retain their own
 scopes. External derivatives remain unverified after successful emission.
 
+An emitted Pyro trace records `site["infer"]["qiec_address"]` for each
+draw and explicit score reached inside a QIEC helper. The address contains
+the original static site, the ordered frames inside that helper's entry,
+and the helper runtime's resumption path. An affine or linear resumption
+adds no ordinal. Pyro uses its usual site names to condition or replay
+draws. The reference program may have extra frames for the enclosing
+program and its call of the helper. Pyro puts the density contribution on
+the draw's trace node and records each explicit score as a separate factor.
+
+For instance, suppose a clause resumes a Bernoulli continuation twice, with
+probabilities $p$ and $1-p$, and returns the sum of the answers. A second
+handler resumes once with each supplied probability. At fixed outcomes
+$(b_0,b_1)$, let each continuation return its probability times $1+b_i$ and
+add its squared probability as a log factor. Let the caller add a final
+log factor of $3p$ after the handler exits. The two draws and the factors
+inside their continuations have paths $(0)$ and $(1)$, and the final factor
+has an empty resumption path. For $0 < p < 1$, the returned value has
+derivative $b_0-b_1$. The derivative of the fixed trace's log joint adds
+the two Bernoulli log-mass derivatives and $2p-2(1-p)+3$. It holds the
+outcomes fixed throughout.
+
 <!-- python: run -->
 ```python
 from quivers.dsl import Compiler, parse
