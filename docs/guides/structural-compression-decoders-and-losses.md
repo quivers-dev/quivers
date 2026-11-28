@@ -181,6 +181,45 @@ accepts draws, scores, and exact enumeration on that finite set.
 The supplied candidates and their tensor weights enter as typed runtime
 values. A source decoder name on its own remains a structural computation.
 
+### Complete depth-bounded support
+
+`FiniteDecoderSupport.complete(decoder, sort=..., max_candidates=...)`
+starts from the declared root sort at the decoder's depth. It follows
+every constructor that the decoder can choose at each reachable sort
+and remaining depth. At depth zero the decoder admits only terminating
+constructors. Each data position is filled from its reachable finite
+vocabulary, with one alternative per distinct payload. Every reachable
+sort and depth must have a productive expansion. A missing vocabulary
+or a reachable choice that can exhaust the depth budget is refused.
+
+Let $N(s,d)$ count the terms at object sort $s$ and depth $d$. For each
+admitted constructor, multiply the counts of its ordered children,
+using their object counts at depth $d-1$ or the sizes of their data
+vocabularies. Sum those products over the constructors. The product
+of no child counts is one. A constructor and its ordered children
+identify one structural term, so the recurrence counts each term once.
+Counting saturates at one above the candidate limit. The check visits
+the reachable sort and depth pairs and their ordered constructor
+positions before it builds any terms. If it accepts, every reachable
+state also fits the limit, since its terms extend to distinct root
+terms along a chosen path with productive siblings.
+
+With maximum constructor arity $a$ and root depth $d$, a term has at
+most $\sum_{j=0}^{d+1} a^j$ object and data nodes. Each data payload is
+one of the stored vocabulary values, so its size is bounded by the
+largest corresponding vocabulary entry. Preparing the support can
+still require exponential work in depth, and the caller supplies the
+candidate limit. Scoring the resulting law visits every prepared term.
+
+If all reachable decoder heads produce valid local probabilities and
+child embeddings, the complete support has original decoder mass one.
+Inductively, each constructor's ordered product of complete child
+laws has mass one, so summing over the locally normalized constructor
+choices also has mass one. The finite law then agrees with the original
+depth-bounded decoder. A supplied candidate set has the conditional
+semantics above. The signature, depth and vocabulary stay fixed between
+calls on a prepared support, while code and learned parameters can change.
+
 ## Stdlib decoders
 
 `quivers.structural.shapes` provides decoders to match its encoders:
