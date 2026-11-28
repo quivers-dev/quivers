@@ -9,6 +9,8 @@ import torch
 
 from quivers.core.algebras import LOG_PROB, REAL, RealAlgebra
 from quivers.qiec.contracts import Conditional, Phase, ProvedOptimal
+from quivers.qiec.kinds import NAT
+from quivers.qiec.types import IndexSum, IndexVariable
 from quivers.stochastic.joins import (
     ELIMINATION_LAWS,
     ELIMINATION_WORK,
@@ -74,6 +76,43 @@ def test_sum_of_two_variables_is_refused() -> None:
     with pytest.raises(JoinRefused) as caught:
         body_query(bodies.SUMMED)
     assert caught.value.code is JoinRefusal.NOT_FLAT
+
+
+@pytest.mark.parametrize("aggregate", [eliminate, enumerate_aggregate])
+def test_noninjective_conclusion_sums_distinct_bindings(aggregate) -> None:
+    """The two proofs of summed(1) both contribute mass and derivatives."""
+    rule = bodies.SEPARATE.with_(
+        conclusion=bodies.judgment("summed", "a").with_(
+            arguments=(
+                IndexSum(
+                    terms=(
+                        IndexVariable(name="a", sort=NAT),
+                        IndexVariable(name="b", sort=NAT),
+                    ),
+                    constant=0,
+                ),
+            )
+        )
+    )
+    presentation = bodies.PRESENTATION.with_(rules=(rule,))
+    query = body_query(rule)
+    items = [*bodies.items("u", [(0,), (1,)]), *bodies.items("w", [(0,), (1,)])]
+    weights = torch.tensor([2.0, 3.0, 7.0, 11.0], dtype=LIKE.dtype, requires_grad=True)
+    result = aggregate(
+        query,
+        relations(query, items),
+        presentation,
+        REAL,
+        dict(zip(items, weights.unbind(), strict=True)),
+        like=LIKE,
+    )
+    values = torch.stack(
+        [result.values[item] for item in bodies.items("summed", [(0,), (1,), (2,)])]
+    )
+    torch.testing.assert_close(values, weights.new_tensor([14.0, 43.0, 33.0]))
+    (gradient,) = torch.autograd.grad(values[1], weights)
+    torch.testing.assert_close(gradient, weights.new_tensor([11.0, 7.0, 3.0, 2.0]))
+    assert result.work.sums == 1
 
 
 def test_agm_bound_of_paths_and_triangles() -> None:
