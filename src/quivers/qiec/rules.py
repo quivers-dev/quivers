@@ -2802,26 +2802,37 @@ def closed_derivation_value(
             "closed proof values require unconditional syntax without equations"
         )
 
-    def refuse_scope(item: Item) -> Local:
-        """Refuse to replace a scoped proof argument with a local placeholder.
-
-        Parameters
-        ----------
-        item
-            The item a scoped premise would bind.
-
-        Raises
-        ------
-        RuleError
-            Always, since a scoped premise has a function type of meanings.
-        """
-        del item
-        raise RuleError("a closed proof value cannot encode a premise under hypotheses")
-
-    value = _lower_value(presentation, derivation, (), [], refuse_scope, [], [])
-    assert isinstance(value, ConstructorValue)
-    _check_lowered_proof(presentation, value, derivation.item, ())
-    return value
+    frames: list[
+        tuple[
+            Derivation,
+            Rule | AxiomSlot,
+            tuple[IndexTerm, ...],
+            tuple[Blocks, ...],
+            list[Value],
+        ]
+    ] = []
+    node: ProofNode = derivation
+    while True:
+        if isinstance(node, Hole):
+            raise RuleError(f"hole {node.index} lies outside its context")
+        rule, _, static = _proof_arguments(presentation, node)
+        frames.append((node, rule, static, _hypotheses(presentation, node), []))
+        while frames:
+            current, rule, static, blocks, fields = frames[-1]
+            position = len(fields)
+            if position < len(current.premises):
+                if blocks and any(blocks[position]):
+                    raise RuleError(
+                        "a closed proof value cannot encode a premise under hypotheses"
+                    )
+                node = current.premises[position]
+                break
+            value = _proof_constructor(presentation, current, rule, static, fields)
+            frames.pop()
+            if not frames:
+                _check_lowered_proof(presentation, value, derivation.item, ())
+                return value
+            frames[-1][-1].append(value)
 
 
 def _check_lowered_proof(
@@ -2902,16 +2913,7 @@ def _lower_value(
         if entry.type != _item_type(presentation, body.item):
             raise RuleError("a hole assumes another item than its context holds")
         return Var(local=entry)
-    rule = presentation.constructors_by_id.get(body.constructor)
-    if rule is None:
-        raise RuleError("a derivation names a rule of another presentation")
-    binding = dict(body.binding)
-    static: list[IndexTerm] = []
-    for binder in rule.telescope:
-        assert isinstance(binder, IndexBinder)
-        if binder.name not in binding:
-            raise RuleError(f"{rule.name!r} leaves {binder.name!r} unbound")
-        static.append(_static(binding[binder.name], binder.sort))
+    rule, binding, static = _proof_arguments(presentation, body)
     fields: list[Value] = []
     blocks = _hypotheses(presentation, body)
     for position, child in enumerate(body.premises):
@@ -2937,14 +2939,90 @@ def _lower_value(
         placeholder = local(target)
         placeholders.append(placeholder)
         fields.append(Var(local=placeholder))
+    return _proof_constructor(presentation, body, rule, static, fields)
+
+
+def _proof_arguments(
+    presentation: RulePresentation, body: Derivation
+) -> tuple[Rule | AxiomSlot, dict[str, Ground], tuple[IndexTerm, ...]]:
+    """Resolve the derivation's exact constructor and telescope arguments.
+
+    Parameters
+    ----------
+    presentation
+        The proof declarations in scope.
+    body
+        The derivation occurrence.
+
+    Returns
+    -------
+    tuple
+        The constructor declaration, ground binding, and typed arguments in
+        telescope order.
+
+    Raises
+    ------
+    RuleError
+        If the constructor belongs to another presentation or a telescope
+        variable is unbound or has the wrong sort.
+    """
+    rule = presentation.constructors_by_id.get(body.constructor)
+    if rule is None:
+        raise RuleError("a derivation names a rule of another presentation")
+    binding = dict(body.binding)
+    static: list[IndexTerm] = []
+    for binder in rule.telescope:
+        assert isinstance(binder, IndexBinder)
+        if binder.name not in binding:
+            raise RuleError(f"{rule.name!r} leaves {binder.name!r} unbound")
+        static.append(_static(binding[binder.name], binder.sort))
+    return rule, binding, tuple(static)
+
+
+def _proof_constructor(
+    presentation: RulePresentation,
+    body: Derivation,
+    rule: Rule | AxiomSlot,
+    static: tuple[IndexTerm, ...],
+    premises: list[Value],
+) -> ConstructorValue:
+    """Finish the proof constructor after its ordered premises are lowered.
+
+    Parameters
+    ----------
+    presentation
+        The proof declarations in scope.
+    body
+        The derivation occurrence.
+    rule
+        Its resolved rule or axiom slot.
+    static
+        Its typed telescope arguments.
+    premises
+        Its lowered premise values, in rule order.
+
+    Returns
+    -------
+    ConstructorValue
+        The ordinary constructor value with its claimed indexed result type.
+
+    Raises
+    ------
+    RuleError
+        If the occurrence carries the wrong number of data fields.
+    """
     if len(body.values) != len(rule.values):
         raise RuleError(f"{rule.name!r} carries {len(rule.values)} values")
-    for value, field in zip(body.values, rule.values, strict=True):
-        fields.append(LiteralValue(value=value, type=field.type))
     return ConstructorValue(
         constructor=rule.id,
-        static_arguments=tuple(static),
-        fields=tuple(fields),
+        static_arguments=static,
+        fields=(
+            *premises,
+            *(
+                LiteralValue(value=value, type=field.type)
+                for value, field in zip(body.values, rule.values, strict=True)
+            ),
+        ),
         result_type=_item_type(presentation, body.item),
     )
 

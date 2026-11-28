@@ -8,11 +8,11 @@ import torch
 from quivers.core.algebras import LOG_PROB
 from quivers.dsl import loads as load_source
 from quivers.qiec._proof_interpretation import lower_closed_interpretation
-from quivers.qiec.checking import KernelError
+from quivers.qiec.checking import CheckContext, KernelError, infer_value
 from quivers.qiec.contracts import InterpretationId, OccurrenceId, PresentationId
 from quivers.qiec.declarations import FieldDef
 from quivers.qiec.effects import ComputationType, EffectRow
-from quivers.qiec.evaluator import RuntimeConstructor
+from quivers.qiec.evaluator import Evaluator, RuntimeConstructor
 from quivers.qiec.execution import run_named
 from quivers.qiec.identifiers import (
     ComputationId,
@@ -26,6 +26,7 @@ from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
     Derivation,
+    Hole,
     HostInterpretation,
     InterpretationDecl,
     Judgment,
@@ -38,7 +39,7 @@ from quivers.qiec.rules import (
     closed_derivation_value,
 )
 from quivers.qiec.serialization import dumps, loads
-from quivers.qiec.terms import Call, Case, ConstructorValue, Handle, Local, Var
+from quivers.qiec.terms import Call, Case, ConstructorValue, Handle, Local, Return, Var
 from quivers.qiec.types import BOOL, REAL, IndexLiteral, IndexVariable, TypeApplication
 from quivers.stochastic.forest import (
     build_forest,
@@ -400,6 +401,59 @@ def test_proof_fold_refuses_a_premise_under_hypotheses() -> None:
             interpretation,
             name="interpret",
             carriers={judgment.id: REAL for judgment in presentation.judgments},
+        )
+
+
+def test_closed_proof_preserves_repeated_fields_and_checks_each_index() -> None:
+    _, presentation, _, goal_family = _setup()
+    (slot,) = presentation.axioms
+    (rule,) = presentation.rules
+    fact = Derivation(
+        constructor=slot.id,
+        item=Item(family=slot.judgment.family, arguments=(3,)),
+        binding=(("i", 3),),
+        values=(2.5,),
+    )
+    tree = Derivation(
+        constructor=rule.id,
+        item=Item(family=goal_family, arguments=(3,)),
+        binding=(("i", 3), ("j", 3)),
+        premises=(fact, fact),
+    )
+    value = closed_derivation_value(presentation, tree)
+    left, right = value.fields
+    assert isinstance(left, ConstructorValue)
+    assert left == right and left is not right
+    runtime = Evaluator().evaluate(Return(value=value.with_(fields=(left, left))))
+    assert isinstance(runtime, RuntimeConstructor)
+    first, second = runtime.fields
+    assert isinstance(first, RuntimeConstructor)
+    assert isinstance(second, RuntimeConstructor)
+    assert first is not second and first.constructor == second.constructor == slot.id
+    assert first.static_arguments == second.static_arguments == left.static_arguments
+    assert float(first.fields[0]) == float(second.fields[0]) == 2.5
+
+    wrong = closed_derivation_value(
+        presentation,
+        fact.with_(item=fact.item.with_(arguments=(4,)), binding=(("i", 4),)),
+    )
+    bad_arity = left.with_(fields=())
+    with pytest.raises(KernelError, match=r"field .* has type .*4.*expected .*3"):
+        infer_value(
+            value.with_(fields=(wrong, bad_arity)),
+            presentation.registry,
+            CheckContext(),
+        )
+    with pytest.raises(KernelError, match="expects 1 fields"):
+        infer_value(
+            value.with_(fields=(left, bad_arity)),
+            presentation.registry,
+            CheckContext(),
+        )
+    with pytest.raises(RuleError, match="hole 0 lies outside its context"):
+        closed_derivation_value(
+            presentation,
+            tree.with_(premises=(Hole(index=0, item=fact.item), fact)),
         )
 
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 from functools import cached_property, lru_cache
 from types import MappingProxyType
 import weakref
-from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from typing import cast
 
 import didactic.api as dx
@@ -2662,12 +2662,7 @@ class Evaluator:
         if isinstance(value, LiteralValue):
             return self._literal(value)
         if isinstance(value, ConstructorValue):
-            return RuntimeConstructor(
-                constructor=value.constructor,
-                static_arguments=value.static_arguments,
-                fields=tuple(self._value(field, environment) for field in value.fields),
-                result_type=value.result_type,
-            )
+            return self._constructor_value(value, environment)
         if isinstance(value, EvidenceValue):
             return value.evidence
         if isinstance(value, AttachmentRef):
@@ -2871,6 +2866,47 @@ class Evaluator:
                 scope = scope.bind(binding.binder, self._value(binding.value, scope))
             return self._value(value.body, scope)
         raise TypeError(f"unsupported QIEC value {type(value).__name__}")
+
+    def _constructor_value(
+        self, value: ConstructorValue, environment: Mapping[Local, object]
+    ) -> RuntimeConstructor:
+        """Materialize a constructor tree in its ordinary field order.
+
+        Parameters
+        ----------
+        value
+            The checked constructor occurrence.
+        environment
+            The local bindings shared by its field values.
+
+        Returns
+        -------
+        RuntimeConstructor
+            The materialized value, with one node per constructor occurrence.
+        """
+        frames: list[tuple[ConstructorValue, Iterator[Value], list[HeldValue]]] = [
+            (value, iter(value.fields), [])
+        ]
+        while True:
+            constructor, pending, fields = frames[-1]
+            try:
+                field = next(pending)
+            except StopIteration:
+                result = RuntimeConstructor(
+                    constructor=constructor.constructor,
+                    static_arguments=constructor.static_arguments,
+                    fields=tuple(fields),
+                    result_type=constructor.result_type,
+                )
+                frames.pop()
+                if not frames:
+                    return result
+                frames[-1][2].append(result)
+                continue
+            if isinstance(field, ConstructorValue):
+                frames.append((field, iter(field.fields), []))
+            else:
+                fields.append(self._value(field, environment))
 
     def _literal(self, value: LiteralValue) -> object:
         """A literal as the machine holds it.

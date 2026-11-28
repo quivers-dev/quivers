@@ -14,11 +14,14 @@ from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.dsl.qiec_tooling import target_diagnostics
 from quivers.qiec import deduction_outcomes
 from quivers.qiec.checking import KernelError
+from quivers.qiec.evaluator import RuntimeConstructor
 from quivers.qiec.execution import ExecutionFailure
 from quivers.qiec.foreign import DeductionProofs
+from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.module import QiecModule, validate_module
 from quivers.qiec.program_runtime import run_program
 from quivers.qiec.serialization import dumps, loads
+from quivers.qiec.types import IndexLiteral, TypeApplication
 from quivers.transpile import UnsupportedConstruct, transpile
 
 
@@ -136,6 +139,104 @@ def test_qvr_scores_distinct_proofs_of_the_same_goal_and_preserves_gradients() -
         )
         assert dict(event.detail["construction_work"])["provenance_records"] == 13
         assert "reified_proof_nodes" in event.detail["unmeasured"]
+
+
+@pytest.mark.parametrize("length", (3, 1024))
+def test_qvr_materializes_one_budgeted_proof_with_exact_indices(length: int) -> None:
+    module = load_source(
+        """\
+object Token : FinSet 2
+object Result : Real 1
+
+deduction Spine : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, S, word
+    rule seed : span(0, J, A) |- span(0, J, S)
+    rule join : span(0, K, S), span(K, J, A) |- span(0, J, S)
+    lexicon
+        "x" : A = word #[learnable]
+
+program listed : Token -> Result
+    let proofs = parse_proofs(Spine, sentence, 1)
+    return proofs
+
+export listed
+"""
+    ).qiec
+    assert isinstance(module, QiecModule)
+    descriptor = next(
+        handler.foreign
+        for handler in module.handlers
+        if isinstance(handler.foreign, DeductionProofs)
+    )
+    assert isinstance(descriptor, DeductionProofs)
+    (proof_family,), constructors = descriptor.proof_presentation.declarations()
+    by_name = {declaration.name: declaration.id for declaration in constructors}
+    term = proof_family.indices[2]
+    assert isinstance(term, IndexBinder)
+    atom = IndexLiteral(value="A", sort=term.sort)
+    start = IndexLiteral(value="S", sort=term.sort)
+    boundaries = tuple(IndexLiteral(value=n, sort=NAT) for n in range(length + 1))
+
+    log_weight = torch.tensor(-0.125, dtype=torch.float64, requires_grad=True)
+    result = run_program(
+        module,
+        "listed",
+        data={"sentence": ("x",) * length},
+        sites={},
+        parameters={"Spine.lex.0": log_weight},
+    )
+    rows = result.value
+    assert isinstance(rows, RuntimeConstructor)
+    assert rows.constructor == descriptor.chart.entry
+    assert rows.static_arguments == (boundaries[0], boundaries[length], start)
+    proof, mass, tail = rows.fields
+    assert isinstance(tail, RuntimeConstructor)
+    assert tail.constructor == descriptor.chart.empty
+    assert tail.fields == ()
+
+    # The seed is the first word. Each join appends exactly the next word
+    # to that prefix. The bounded walk checks 2n proof nodes by occurrence
+    # without comparing, printing or recursing over a whole subtree.
+    nodes = 0
+    for right in range(length, 0, -1):
+        assert isinstance(proof, RuntimeConstructor)
+        assert isinstance(proof.result_type, TypeApplication)
+        assert proof.result_type.constructor == proof_family.type_constructor
+        assert proof.result_type.arguments == (boundaries[0], boundaries[right], start)
+        if right == 1:
+            assert proof.constructor == by_name["Spine__rule_seed"]
+            assert proof.static_arguments == (boundaries[1],)
+            (word,) = proof.fields
+        else:
+            assert proof.constructor == by_name["Spine__rule_join"]
+            assert proof.static_arguments == (boundaries[right - 1], boundaries[right])
+            proof, word = proof.fields
+        assert isinstance(word, RuntimeConstructor)
+        assert word.constructor == by_name["Spine__axiom_span"]
+        assert isinstance(word.result_type, TypeApplication)
+        assert word.result_type.constructor == proof_family.type_constructor
+        assert (
+            word.result_type.arguments
+            == word.static_arguments
+            == (boundaries[right - 1], boundaries[right], atom)
+        )
+        assert word.fields == ("x",)
+        nodes += 2
+    assert nodes == 2 * length <= 2048
+
+    # Run the same live parameter through every lexical occurrence.
+    assert isinstance(mass, torch.Tensor)
+    torch.testing.assert_close(mass, length * log_weight, rtol=0, atol=0)
+    (gradient,) = torch.autograd.grad(mass, log_weight)
+    torch.testing.assert_close(gradient, log_weight.new_tensor(length), rtol=0, atol=0)
+    (event,) = [
+        item for item in result.result.trace if item.event == "deduction.proofs"
+    ]
+    assert event.detail["proof_budget"] == 1
+    assert event.detail["structural_goal_proofs"] == event.detail["positive_rows"] == 1
+    assert (
+        dict(event.detail["construction_work"])["provenance_records"] == 4 * length - 1
+    )
 
 
 def test_proof_report_distinguishes_structural_budget_from_positive_mass(
