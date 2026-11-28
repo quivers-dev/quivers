@@ -1117,6 +1117,20 @@ the explicit proof sizes, the key computations, and hashing the resulting
 key values. When the key depends only on the conclusion item, use
 `parse_outcomes` with an item key to sum the proofs first in the packed chart.
 
+The `deduction.grouped_outcomes.plan` trace describes the grouping stage
+when the checked mapper uses one declared proof row owner. It records
+the call site of the named key. The mapper opens each row's indices and
+passes its proof and weight through in their original roles. The upstream
+`deduction.proofs.plan` records the structural budgets and proof enumeration.
+For $N$ supplied rows, map construction takes $O(N+T)$ work, where $T$ counts
+static specialization and key execution. Grouping takes expected $O(N+S)$
+work under the word RAM model with expected hashing, where $S$ counts the
+words in all produced keys. At fixed support and keys, one reverse pass
+takes $O(N+D)$ additional work for $D$ distinct keys. Normalization adds a
+pass over at most $D$ positive rows. The forward space bound also counts
+the supplied proofs, the peak workspace of one specialization and key call,
+and the static graphs and indices retained in the specialization caches.
+
 #### Packing Boolean proof meanings
 
 Use `parse_packed_boolean_outcomes(D, sentence, meaning)` for an
