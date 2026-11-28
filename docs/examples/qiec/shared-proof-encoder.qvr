@@ -1,0 +1,75 @@
+object Token : FinSet 2
+object Result : Real 1
+
+deduction Mix : Token -> Token [semiring=LogProb, start=S]
+    atoms span, A, B, D, S, same, lex
+    rule first : span(I, K, A, lex), span(K, J, D, lex) |- span(I, J, S, same)
+    rule second : span(I, K, B, lex), span(K, J, D, lex) |- span(I, J, S, same)
+    lexicon
+        "x" : A = lex #[learnable]
+        "x" : B = lex #[learnable]
+        "y" : D = lex
+
+family Meaning : Type
+    constructor word : String -> Meaning
+    constructor approved : Meaning
+
+interpret meaning : Mix -> Meaning
+    rule first = approve
+    rule second = approve
+    axiom span = leaf_meaning
+
+interpret embed_proof : Mix -> Tensor[Real]([2])
+    rule first = square_left
+    rule second = square_right
+    axiom span = encode_word
+
+define leaf_meaning(value : String) : Meaning !{} =
+    return construct word(value) as Meaning
+
+define approve(left : Meaning, right : Meaning) : Meaning !{} =
+    return construct approved() as Meaning
+
+define encode_word(value : String) : Tensor[Real]([2]) !{} =
+    if value == "x" then
+        return [2.0, 1.0]
+    else
+        return [3.0, -1.0]
+
+define square_left(left : Tensor[Real]([2]), right : Tensor[Real]([2])) : Tensor[Real]([2]) !{} =
+    return [left[0] * left[0] + right[0], left[1] - right[1]]
+
+define square_right(left : Tensor[Real]([2]), right : Tensor[Real]([2])) : Tensor[Real]([2]) !{} =
+    return [right[0] * right[0] + left[0], right[1] - left[1]]
+
+define predict(form : Meaning, code : Tensor[Real]([2]), theta : Tensor[Real]([4])) : Real !{} =
+    case form motive => Real
+        approved =>
+            return sigmoid(theta[0] + theta[1] * tanh(theta[2] * code[0] + theta[3] * code[1]))
+        word(value) =>
+            return 0.5
+
+define predictions(rows : Mix__Proofs, theta : Tensor[Real]([4])) : Real !{} =
+    case rows motive => Real
+        Mix__proof_end =>
+            return 0.0
+        Mix__proof_entry[i, j, category, form](proof, weight, tail) =>
+            let reading <- meaning[i, j, category, form](proof)
+            let code <- embed_proof[i, j, category, form](proof)
+            let probability <- predict(reading, code, theta)
+            let rest <- predictions(tail, theta)
+            return rest + exp(weight) * probability
+
+instance params : Param
+
+define network() : Tensor[Real]([4]) !{params} =
+    perform params.get[Tensor[Real]([4])]("encoder.response")
+
+program assess_encoded(sentence : Tensor[String]([2]), response : Bool) : Token -> Result
+    let proofs = parse_normalized_proofs(Mix, sentence, 2)
+    let theta <- network()
+    let probability <- predictions(proofs, theta)
+    observe response <- Bernoulli(probs=probability)
+    return probability
+
+export assess_encoded

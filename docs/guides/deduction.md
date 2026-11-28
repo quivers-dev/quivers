@@ -764,6 +764,27 @@ the explicit proof sizes, the key computations, and hashing the resulting
 key values. When the key depends only on the conclusion item, use
 `parse_outcomes` with an item key to sum the proofs first in the packed chart.
 
+#### Encoding two proofs of one logical form
+
+The [shared proof encoder](../examples/qiec/shared-proof-encoder.qvr)
+uses one weighted deduction and two interpretations. `meaning` gives a
+nominal logical form, and `embed_proof` folds the ordered rule applications
+into a two-dimensional code. For the sentence `x y`, both proofs conclude
+the same item and return the logical form `approved`. The two rule
+operations give codes $(7,2)$ and $(11,-2)$, respectively. Both
+interpretations consume proofs supplied by the same packed parse.
+
+The model evaluates a neural response at each code and weights it by that
+proof’s normalized mass. If $q_r$ is a proof’s probability, $c_r$ its code,
+and $p(c_r)$ the response probability for the common form, the observation
+has probability $\sum_r q_r p(c_r)$. The model preserves proof occurrences
+even though their logical forms are identical. Replacing the codes by one
+item-level code changes the response and removes the lexical-weight
+gradient in this example. Scoring an average code also changes the
+response because the neural operation is nonlinear. The authored proof
+query has a bound of two derivations and checks that bound before folding
+the requested proofs.
+
 #### Scoring a response with a prover
 
 The example computes the tokens of “item reviewed” inside a QVR program. Its lexical rules
