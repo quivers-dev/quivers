@@ -55,9 +55,7 @@ from fractions import Fraction
 from typing import Literal
 
 import didactic.api as dx
-import numpy
 import torch
-from scipy.optimize import linprog
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.core.algebras import OrderPreservingSemiring
@@ -415,6 +413,10 @@ def agm_bound(
             sizes=tuple(sizes),
             cover=tuple(Rational.of(0) for _ in sizes),
         )
+
+    import numpy
+    from scipy.optimize import linprog
+
     costs = numpy.array([math.log(max(size, 2)) for size in sizes])
     matrix = numpy.array(
         [[-1.0 if name in edge else 0.0 for edge in edges] for name in names]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import math
 from itertools import product
 
@@ -40,6 +41,7 @@ from quivers.stochastic.planning import (
     PlanRefused,
     acyclicity_certificate,
     plan,
+    rule_joins,
 )
 from tests.evidence import bodies, graphs
 from tests.evidence import presentations as fixture
@@ -92,6 +94,30 @@ def test_record_names_the_algorithm_and_what_it_rests_on() -> None:
     assert record.alternatives
     assert any("premise order" in text for text in record.assumptions)
     assert record.certificate is None
+
+
+@pytest.mark.parametrize("missing", ["numpy", "scipy"])
+def test_indexed_join_cover_without_optional_solver(monkeypatch, missing):
+    """An all-ones cover still bounds the same repeated-premise join."""
+    exact = rule_joins(graphs.PRESENTATION)
+    original_import = builtins.__import__
+
+    def require_optional(name, *args, **kwargs):
+        if name.split(".", 1)[0] == missing:
+            raise ModuleNotFoundError(name=missing)
+        return original_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as imports:
+        imports.setattr(builtins, "__import__", require_optional)
+        lean = rule_joins(graphs.PRESENTATION)
+
+    assert [record.rule for record in exact] == [record.rule for record in lean]
+    assert [record.algorithm for record in exact] == ["generic join"] * 2
+    assert [record.algorithm for record in lean] == ["generic join"] * 2
+    assert [record.rho.fraction for record in exact] == [1, 1]
+    assert [record.rho.fraction for record in lean] == [2, 3]
+    assert [record.bound for record in lean] == ["2 N + 8 N^(2)", "3 N + 9 N^(3)"]
+    assert all("weight one on each premise" in record.reason for record in lean)
 
 
 def test_record_cost_counts_the_tape_under_autograd() -> None:

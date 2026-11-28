@@ -1176,12 +1176,13 @@ class RuleJoin(QiecModel):
         or ``"constant"``
         for a rule without premises.
     rho : Rational
-        The weight of a least fractional edge cover of the body's
-        variables by its premises, ``rho*``; zero for a constant.
+        The exponent from the selected cover or join strategy.
+        For Generic Join, the weight of a feasible fractional edge
+        cover of the body's variables. Zero for a constant.
     bound : str
         The bound on the join's lookups and candidates over a run.
     reason : str
-        Why the algorithm applies.
+        Why the algorithm and bound apply.
     order : tuple of str
         The variables summed out, in the selected elimination order.
     """
@@ -1205,8 +1206,9 @@ def rule_joins(presentation: RulePresentation) -> tuple[RuleJoin, ...]:
     joins visit no more than Generic Join over the whole body below the
     trigger's values, so the rule's lookups and candidates are
     ``O(m N + m^2 n N^rho)`` for ``m`` premises, ``n`` variables and
-    ``N`` the most items of a premise's form. Any other rule looks its
-    premises up one at a time.
+    ``N`` the most items of a premise's form. With no optional linear solver,
+    weight one on every premise is a feasible cover and gives ``rho = m``.
+    Any other rule looks its premises up one at a time.
 
     Parameters
     ----------
@@ -1247,13 +1249,25 @@ def rule_joins(presentation: RulePresentation) -> tuple[RuleJoin, ...]:
             )
             continue
         query = body_query(rule)
-        cover = agm_bound(
-            query.variables,
-            [atom.variables for atom in query.atoms],
-            [2] * m,
-        )
+        try:
+            rho = agm_bound(
+                query.variables,
+                [atom.variables for atom in query.atoms],
+                [2] * m,
+            ).rho
+            reason = (
+                "every pattern is a relation of its variables; the AGM "
+                "bound of the body holds for every trigger's join below its values"
+            )
+        except ModuleNotFoundError as error:
+            if error.name not in {"numpy", "scipy"}:
+                raise
+            rho = Fraction(m)
+            reason = (
+                "an optional linear solver dependency is unavailable; weight one "
+                "on each premise covers every body variable for every trigger"
+            )
         n = len(query.variables)
-        rho = cover.rho
         found.append(
             RuleJoin(
                 rule=rule.id,
@@ -1261,8 +1275,7 @@ def rule_joins(presentation: RulePresentation) -> tuple[RuleJoin, ...]:
                 algorithm="generic join",
                 rho=Rational.of(rho),
                 bound=f"{m} N + {m * m * n} N^({rho})",
-                reason="every pattern is a relation of its variables; the AGM "
-                "bound of the body holds for every trigger's join below its values",
+                reason=reason,
             )
         )
     return tuple(found)
