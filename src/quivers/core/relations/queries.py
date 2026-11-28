@@ -44,7 +44,13 @@ class _PathPlan:
     work: QueryWork
     closures: tuple[_ClosureBlock, ...] = ()
 
-    def evaluate(self, weights: torch.Tensor, algebra: Semiring) -> torch.Tensor:
+    def evaluate(
+        self,
+        weights: torch.Tensor,
+        algebra: Semiring,
+        *,
+        visits: list[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         if self.closures:
             if not isinstance(algebra, Star) or not algebra.establishes(
                 *SEMIRING_LAWS, STAR_LEAST_SOLUTION
@@ -58,7 +64,7 @@ class _PathPlan:
                 )
             closed = [block.evaluate(weights, algebra) for block in self.closures]
             weights = torch.cat((weights, *closed))
-        return self.packed.evaluate(weights, algebra)
+        return self.packed.evaluate(weights, algebra, visits=visits)
 
 
 def _advance(
@@ -238,6 +244,8 @@ def _trim_paths(
     *,
     max_closure_size: int | None = None,
     weight_slots: int = 0,
+    visit_order: list[int] | None = None,
+    closed_exits: dict[int, int] | None = None,
 ) -> _PathPlan:
     graph = _productive_graph(arcs, initial, final)
     order = graph.order
@@ -258,10 +266,11 @@ def _trim_paths(
             final,
             max_closure_size,
             weight_slots,
+            closed_exits if closed_exits is not None else {},
         )
 
     return _PathPlan(
-        _pack_paths(order, active_arcs, graph.initial, final),
+        _pack_paths(order, active_arcs, graph.initial, final, visit_order=visit_order),
         QueryWork(
             len(arcs),
             examined,
@@ -280,12 +289,12 @@ def _expand_components(
     final: list[tuple[int, int]],
     max_closure_size: int,
     weight_slots: int,
+    exits: dict[int, int],
 ) -> tuple[list[int], list[tuple[int, int]], tuple[_ClosureBlock, ...]]:
     # Within a component an accepting walk has one entry, then one
     # internal segment, then an exit. Replace all internal segments with
     # the corresponding entries of the local star.
     order: list[int] = []
-    exits: dict[int, int] = {}
     closures: list[_ClosureBlock] = []
     for members in tuple(_components(arcs, reverse, productive)):
         local = {state: index for index, state in enumerate(members)}
