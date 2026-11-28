@@ -915,6 +915,51 @@ assert len(plan.sample(seed=42).draws) == 1
 
 ::: quivers.qiec.mixed_site_gradients
 
+## Exact finite marginalization
+
+`marginalize_bernoulli_unit` takes a scalar source computation whose
+return is an observation factor. It enumerates the latent Bernoulli
+histories and differentiates each prior probability and observation
+factor. Each site needs an explicit `enumerate` policy. The factor
+on every complete history must be strictly positive. This ensures the
+complete-data log scores exist on the checked local support.
+
+For history $h$, write $w_h$ for the joint weight and $Z = \sum_h w_h$
+for the marginal observation weight. The result records $Z$ and its
+directional derivative, the posterior weights $w_h / Z$ and their
+derivatives, and the complete-data log scores $w_h' / w_h$. The
+posterior mean of these scores equals $Z' / Z$ by the finite Fisher
+identity. The reference computation checks this equality in rational
+arithmetic.
+
+```python
+from fractions import Fraction
+from quivers.dsl import Compiler, parse
+from quivers.qiec import Bind, Perform, SiteEstimator, marginalize_bernoulli_unit
+
+source = """
+instance random : Random
+
+define observed_unit(p : Real) : Real !{random} =
+    let group <- perform random.sample[Bool](site("group"), Bernoulli(p))
+    if group then
+        return 3.0
+    else
+        return 1.0
+"""
+module = Compiler(parse(source), module_name="finite-marginalization").qiec_module
+assert module is not None
+entry = next(item for item in module.computations if item.name == "observed_unit")
+assert isinstance(entry.body, Bind) and isinstance(entry.body.first, Perform)
+policy = SiteEstimator(site=entry.body.first.request.origin.static_site, estimator="enumerate")
+fit = marginalize_bernoulli_unit(module, entry.id, (Fraction(1, 4),), (1,), (policy,))
+assert (fit.normalizer.value, fit.normalizer.tangent) == (Fraction(3, 2), 2)
+assert fit.marginal_score == Fraction(4, 3)
+assert [outcome.posterior.value for outcome in fit.outcomes] == [Fraction(1, 2)] * 2
+```
+
+::: quivers.qiec.finite_marginalization
+
 ## Finite-step Metropolis derivatives
 
 `finite_metropolis_jvp` takes an initial law, positive target weights,

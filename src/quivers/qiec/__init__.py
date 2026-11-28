@@ -217,6 +217,11 @@ from quivers.qiec.mixed_site_gradients import (
     MixedSiteGradientPlan,
     plan_mixed_site_gradient,
 )
+from quivers.qiec.finite_marginalization import (
+    FisherMarginalization,
+    FisherOutcome,
+    marginalize_bernoulli_unit,
+)
 from quivers.qiec.finite_elimination import (
     FiniteAlgebra,
     FiniteAlgebraLawError,
@@ -1173,6 +1178,7 @@ __all__ += [
     "MixedSiteGradientPlan",
     "plan_mixed_site_gradient",
 ]
+__all__ += ["FisherMarginalization", "FisherOutcome", "marginalize_bernoulli_unit"]
 __all__ += [
     "FiniteAlgebra",
     "FiniteAlgebraLawError",
