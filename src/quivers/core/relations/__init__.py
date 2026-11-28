@@ -65,6 +65,9 @@ __all__ = [
     "RelationLimitError",
     "RelationPath",
     "RelationTopology",
+    "StringAlignment",
+    "StringAlignmentCertificate",
+    "StringAlignmentMapResult",
     "StringBeliefResult",
     "StringEPResult",
     "StringSiteProjection",
@@ -78,6 +81,7 @@ __all__ = [
     "closure",
     "concatenate",
     "condition",
+    "dual_alignment_map",
     "dual_string_map",
     "intersect",
     "invert",
@@ -639,4 +643,11 @@ from quivers.core.relations.beliefs import (  # noqa: E402
 from quivers.core.relations.contextual_edit import (  # noqa: E402
     ContextualEditChannel,
     ContextualEditPlan,
+)
+
+from quivers.core.relations.alignment_dual import (  # noqa: E402
+    StringAlignment,
+    StringAlignmentCertificate,
+    StringAlignmentMapResult,
+    dual_alignment_map,
 )
