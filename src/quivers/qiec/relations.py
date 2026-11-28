@@ -27,6 +27,16 @@ from quivers.qiec.foreign import KERNEL_ALGEBRAS
 
 
 class _RelationWeights(nn.Module):
+    """Expose live scalar tensors in the relation's weight-slot order.
+
+    Parameters
+    ----------
+    slots : tuple of ParameterId
+        The parameter identity at each weight slot.
+    values : Mapping of ParameterId to torch.Tensor
+        The original tensor for each distinct identity.
+    """
+
     def __init__(
         self,
         slots: tuple[ParameterId, ...],
@@ -42,6 +52,13 @@ class _RelationWeights(nn.Module):
                 self.register_buffer(name, value)
 
     def forward(self) -> torch.Tensor:
+        """Read current weights without changing their parameter identities.
+
+        Returns
+        -------
+        torch.Tensor
+            One value per slot, including repeated uses of shared parameters.
+        """
         if not self._slots:
             return torch.empty(0)
         return torch.stack(
@@ -62,6 +79,27 @@ class RationalRelationSpec(QiecModel):
     weight values without identifying arc or boundary occurrences.
     `algebra` states the trusted claim subject of a shipped scalar semiring.
     Live values are supplied to `bind` after decoding.
+
+    Parameters
+    ----------
+    tapes : tuple of pairs of str and int
+        The nominal alphabet name and cardinality of each tape.
+    input_tapes : int
+        The number of leading tapes in the domain.
+    n_states : int
+        The number of states, indexed from zero.
+    arcs : tuple
+        Source, target, tape labels, and weight slot for each arc occurrence.
+    initial : tuple of pairs of int
+        Initial-state and weight-slot records.
+    final : tuple of pairs of int
+        Final-state and weight-slot records.
+    weight_names : tuple of str
+        The distinct names of the relation's local weight slots.
+    weight_parameters : tuple of ParameterId
+        The stable parameter identity for each slot.
+    algebra : ClaimSubject
+        The trusted identity of the scalar semiring.
     """
 
     tapes: tuple[tuple[str, int], ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -80,6 +118,13 @@ class RationalRelationSpec(QiecModel):
 
     @dx.model_validator()
     def _validate_spec(self) -> None:
+        """Validate decoded topology and parameter identities.
+
+        Raises
+        ------
+        ValueError
+            If the algebra is unrecognized or the slot and parameter counts differ.
+        """
         if self._algebra is None:
             raise ValueError(
                 "relation requires a trusted scalar semiring claim subject"
@@ -90,6 +135,13 @@ class RationalRelationSpec(QiecModel):
 
     @property
     def _algebra(self) -> Semiring | None:
+        """Resolve the complete claim subject against the kernel registry.
+
+        Returns
+        -------
+        Semiring or None
+            The registered scalar semiring, if its claim subject matches.
+        """
         member = KERNEL_ALGEBRAS.get(self.algebra.name)
         return member if member is not None and member.subject == self.algebra else None
 
@@ -105,6 +157,25 @@ class RationalRelationSpec(QiecModel):
         The topology uses the shipped string sets, finite alphabets, arcs
         and boundaries. The algebra must be a shipped scalar semiring
         singleton from the kernel registry.
+
+        Parameters
+        ----------
+        topology : RelationTopology
+            The ordered sparse topology to encode.
+        algebra : Semiring
+            The registered scalar semiring of the relation.
+        weight_parameters : tuple of ParameterId
+            One stable identity per weight slot.
+
+        Returns
+        -------
+        RationalRelationSpec
+            The validated specification.
+
+        Raises
+        ------
+        TypeError
+            If the topology representation or algebra is unsupported.
         """
         if (
             type(topology) is not RelationTopology
@@ -144,7 +215,13 @@ class RationalRelationSpec(QiecModel):
 
     @cached_property
     def topology(self) -> RelationTopology:
-        """The validated topology, including its sparse indexes."""
+        """Reconstruct the topology and its sparse indexes.
+
+        Returns
+        -------
+        RelationTopology
+            The validated, indexed topology of the specification.
+        """
         return RelationTopology(
             tapes=tuple(
                 StringSet(alphabet=FinSet(name=name, cardinality=size))
@@ -166,6 +243,24 @@ class RationalRelationSpec(QiecModel):
         be original torch.nn.Parameter objects. Each distinct identity
         binds one object, and shared slots must use the same identity.
         The mapping may also provide identities for other relations.
+
+        Parameters
+        ----------
+        parameters : Mapping of ParameterId to torch.Tensor
+            The live scalar tensor for each stable identity.
+
+        Returns
+        -------
+        RationalRelation
+            The sparse relation with live access to its bound weights.
+
+        Raises
+        ------
+        TypeError
+            If the mapping or its tensors do not meet the binding contract.
+        ValueError
+            If a required identity is missing, two different identities bind
+            one object, or tensors disagree on dtype or device.
         """
         if not isinstance(parameters, Mapping):
             raise TypeError("relation weights require an explicit parameter mapping")
