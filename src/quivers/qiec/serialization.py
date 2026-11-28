@@ -119,6 +119,11 @@ from quivers.qiec.contracts import (
 )
 from quivers.qiec.contextual_edit_runtime import FixedContextualEditRequest
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
+from quivers.qiec.effect_law_schema import (
+    EffectEquation,
+    EffectLawBundle,
+    EffectLawObligation,
+)
 from quivers.qiec.pruned_string_graph_runtime import PrunedStringGraphRequest
 from quivers.qiec.regular_ep_runtime import RegularStringEPRequest
 from quivers.qiec.relation_backoff import FixedBackoffRelationRequest
@@ -482,6 +487,9 @@ _NODE_CLASSES = (
     NamedEffectInstance,
     NamedComputation,
     QiecModule,
+    EffectEquation,
+    EffectLawObligation,
+    EffectLawBundle,
     ProgramEntry,
     ProgramParameter,
     ProgramSite,

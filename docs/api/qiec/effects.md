@@ -298,6 +298,28 @@ checks these identifiers against the module and assigns one statement to
 each effect's law name. Use the indicated exact checker on the module
 and equation to obtain a decision.
 
+The bundle round-trips with `dumps` and `loads`. The obligation in this
+example requests a rational check of the scale law above.
+
+```python
+from quivers.qiec import EffectLawBundle, EffectLawObligation, dumps, loads
+
+bundle = EffectLawBundle(
+    module=module,
+    obligations=(
+        EffectLawObligation(equation=equation, handler=module.handlers[0].id, method="rational"),
+    ),
+)
+decoded = loads(dumps(bundle))
+assert isinstance(decoded, EffectLawBundle)
+obligation = decoded.obligations[0]
+assert obligation.method == "rational"
+rechecked = check_scalar_effect_law(
+    decoded.module, obligation.equation, obligation.handler, method=obligation.method
+)
+assert rechecked == decision
+```
+
 ::: quivers.qiec.effect_law_schema
 
 ## Polynomial laws
