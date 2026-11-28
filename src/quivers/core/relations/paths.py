@@ -14,11 +14,13 @@ import torch
 from quivers.core.algebras import (
     LOG_PROB,
     MARKOV,
+    FreeSemimodule,
     LogProbAlgebra,
     MarkovAlgebra,
     Semiring,
 )
-from quivers.core.relations._packed import _take
+from quivers.core.carriers import ExpectationSemiring
+from quivers.core.relations._packed import _PackedPaths, _pack_paths, _take
 from quivers.core.relations.queries import (
     ProductiveEpsilonCycleError,
     RelationLimitError,
@@ -620,6 +622,87 @@ class _PathWalks:
         index = torch.tensor(destinations, dtype=torch.long, device=weights.device)
         counts = normalized.new_zeros((len(ids),)).index_add(0, index, normalized)
         return ArcCounts(ids, counts, normalizer)
+
+    @cached_property
+    def _feature_plan(self) -> _PackedPaths:
+        if self._cyclic:
+            raise ProductiveEpsilonCycleError(
+                "feature moments require an acyclic productive observation"
+            )
+        topology = self._topology
+        arc_start = len(topology.initial)
+        final_start = arc_start + len(topology.arcs)
+        final_rows = {mark.state: index for index, mark in enumerate(topology.final)}
+        # The first observations are the initial marks in topology order.
+        # Arc payloads are original occurrence IDs, including occurrences
+        # that share scalar weight slots or repeat at different offsets.
+        return _pack_paths(
+            self._order,
+            [
+                tuple((target, arc_start + arc_id) for target, arc_id in edges)
+                for edges in self._arcs
+            ],
+            tuple((state, state) for state, _ in self._initial),
+            [
+                (state, final_start + final_rows[self._original[state]])
+                for state in self._final
+            ],
+        )
+
+    def log_feature_moments(
+        self,
+        weights: torch.Tensor,
+        algebra: Semiring,
+        arc_logs: torch.Tensor,
+        initial_logs: torch.Tensor | None,
+        final_logs: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        plan = self._feature_plan
+        algebra = _probability_algebra(weights, algebra)
+        if algebra is MARKOV:
+            weights = _markov_log_weights(weights)
+        if (
+            not isinstance(arc_logs, torch.Tensor)
+            or arc_logs.ndim != 2
+            or not arc_logs.shape[1]
+        ):
+            raise ValueError("arc log features require a nonempty feature axis")
+        width = arc_logs.shape[1]
+        topology = self._topology
+        features: list[torch.Tensor] = []
+        slots: list[int] = []
+        for name, values, marks in (
+            ("initial", initial_logs, topology.initial),
+            ("arc", arc_logs, topology.arcs),
+            ("final", final_logs, topology.final),
+        ):
+            slots.extend(mark.weight for mark in marks)
+            shape = (len(marks), width)
+            if values is None:
+                features.append(weights.new_full(shape, -torch.inf))
+                continue
+            if (
+                not isinstance(values, torch.Tensor)
+                or values.shape != shape
+                or values.dtype != weights.dtype
+                or values.device != weights.device
+                or values.layout != torch.strided
+                or not bool(LOG_PROB.contains(values).all())
+            ):
+                raise ValueError(
+                    f"{name} log features require one log-space row per occurrence "
+                    "on the weight dtype and device"
+                )
+            features.append(values)
+        carrier = ExpectationSemiring(FreeSemimodule(LOG_PROB, width))
+        local_weights = _take(weights, tuple(slots))
+        local_moments = carrier.module.act(local_weights, torch.cat(features))
+        result = plan.evaluate(carrier.pack(local_weights, local_moments), carrier)
+        if not bool(carrier.contains(result)):
+            raise OverflowError(
+                "log feature moments are outside the evaluation precision"
+            )
+        return carrier.parts(result)
 
 
 __all__ = ["ArcCounts", "PathStatistics", "RelationPath"]

@@ -595,6 +595,54 @@ class FixedStringQuery:
             final_costs,
         )
 
+    def log_feature_moments(
+        self,
+        arc_logs: torch.Tensor,
+        *,
+        initial_logs: torch.Tensor | None = None,
+        final_logs: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return the log total mass and unnormalized log feature moments.
+
+        For each feature, the moment sums the path weight times the sum
+        of its nonnegative feature increments. The productive observation
+        must be acyclic and use Markov or LogProb probability weights.
+
+        Parameters
+        ----------
+        arc_logs, initial_logs, final_logs : torch.Tensor or None
+            Log increments with one row per original occurrence and the
+            same nonempty feature axis, dtype, and device. A value of
+            minus infinity contributes zero. Omitted boundary tables
+            contribute zero increments.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            The scalar log path mass and the vector of log weighted sums.
+            Zero mass or feature sums return minus infinity. With positive
+            mass, subtract its log from the vector to normalize the sums.
+            Derivatives flow on the current positive support.
+
+        Raises
+        ------
+        ProductiveEpsilonCycleError
+            The productive observation needs a closure capability.
+        TypeError
+            The relation does not have floating-point probability weights.
+        ValueError
+            A log feature table has the wrong shape or carrier.
+        OverflowError
+            A reduction produces NaN or positive infinity.
+        """
+        return self._walks.log_feature_moments(
+            self._relation._weights(),
+            self._relation.algebra,
+            arc_logs,
+            initial_logs,
+            final_logs,
+        )
+
 
 class FiniteRelationRestriction(FiniteMorphism):
     """A size-checked finite tensor view of a rational relation.

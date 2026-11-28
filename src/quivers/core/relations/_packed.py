@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from quivers.core.algebras import Semiring
+from quivers.core.algebras import OrderPreservingSemiring
 
 
 def _take(values: torch.Tensor, indices: tuple[int, ...]) -> torch.Tensor:
@@ -23,14 +23,18 @@ class _Incoming:
     state_order: tuple[int, ...]
     padded: bool
 
-    def join(self, values: torch.Tensor, algebra: Semiring) -> torch.Tensor:
+    def join(
+        self, values: torch.Tensor, algebra: OrderPreservingSemiring
+    ) -> torch.Tensor:
         if self.padded:
             values = torch.cat((values, algebra.zero_like((1,), values)))
         gathered = _take(values, self.indices)
         if len(self.buckets) == 1 and self.buckets[0][1] == 1:
             return gathered
         joined = [
-            chunk if width == 1 else algebra.join(chunk.reshape(-1, width), dim=1)
+            chunk
+            if width == 1
+            else algebra.join(chunk.reshape(-1, width, *algebra.element_shape), dim=1)
             for chunk, (_, width) in zip(
                 gathered.split(tuple(size for size, _ in self.buckets)),
                 self.buckets,
@@ -86,7 +90,7 @@ class _PackedPaths:
     def evaluate(
         self,
         weights: torch.Tensor,
-        algebra: Semiring,
+        algebra: OrderPreservingSemiring,
         *,
         visits: list[torch.Tensor] | None = None,
         final_groups: _Incoming | None = None,

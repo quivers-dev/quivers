@@ -477,6 +477,29 @@ on the current positive support. Zero-probability choices contribute
 zero. An entropy of paths can differ from an entropy of the output
 words when several paths emit the same word.
 
+### Packed nonnegative feature moments
+
+`FixedStringQuery.log_feature_moments` runs the packed acyclic executor
+over an occurrence-indexed plan with `ExpectationSemiring` over
+`FreeSemimodule(LogProb, d)`.
+Each initial mark, arc, and final mark has an optional nonnegative
+feature increment $f$ represented by its logarithm. An occurrence
+with mass $p$ starts with the pair $(p,pf)$. Multiplying two pairs adds
+the increments for the extended path because their second component
+is $p_1(p_2f_2) + p_2(p_1f_1)$. Adding pairs sums the weighted
+increments across distinct paths. [Li and Eisner (2009), §3](https://aclanthology.org/D09-1005/)
+
+The query returns $\log Z$ and the vector of unnormalized log moments.
+Subtract $\log Z$ from the vector for conditional log expectations
+when $Z$ is positive. Operations stay in log space, including for a
+path with a log weight of $-1000$. Feature rows follow original
+occurrences even when weights are tied or an arc is traversed at
+multiple offsets. `path_statistics` computes entropy and signed
+additive costs, including on observations with a supported cyclic
+closure. The feature pass requires an
+acyclic productive observation and stores a fixed-width carrier at each
+active chart entry.
+
 ### Alignment-marginal output ranking
 
 `best_marginal_output` compares the Markov path sum for each supplied

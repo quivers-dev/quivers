@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Packed nonnegative path feature moments.** Fixed acyclic string observations can compute log-space first moments using the expectation semiring, with per-occurrence features and live derivatives through shared weights.
 - **Authored sparse relation cascades.** Checked relation operations can reuse the results of earlier or forward-declared operations. Each step retains its nominal operands and reads the original live parameters under explicit intermediate limits.
 - **Checked expected traversal vectors.** Serialize ordered original arc IDs and retrieve their live conditional traversal counts, including bounded cyclic queries.
 - **Checked sparse posterior path laws.** Fixed-word requests bind typed path posteriors for Random draws, replay, and differentiable trace scoring with original arc identities.
