@@ -136,7 +136,11 @@ from quivers.qiec.relations import (
     RationalRelationSpec,
 )
 from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
-from quivers.qiec.string_solvers import JointAlignmentMapConfig, RegularStringEPConfig
+from quivers.qiec.string_solvers import (
+    JointAlignmentMapConfig,
+    PrunedStringBPConfig,
+    RegularStringEPConfig,
+)
 from quivers.qiec._scoped_interpretation_binding import ScopedInterpretationBinding
 from quivers.qiec.rules import (
     AxiomOccurrence,
@@ -372,6 +376,7 @@ _NODE_CLASSES = (
     RationalRelationSpec,
     StringFactorGraphSpec,
     JointAlignmentMapConfig,
+    PrunedStringBPConfig,
     RegularStringEPConfig,
     TreeStringGraphRequest,
     # source identity and kinds

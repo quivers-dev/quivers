@@ -263,6 +263,15 @@ operation. Message stabilization alone does not certify exact marginals.
 Both solvers bind the original weight identities at invocation. The wire
 records carry neither a previous fitted belief nor an optimum certificate.
 
+A `PrunedStringBPConfig` records ordered finite word supports, a
+positive beam width, damping, and construction and sweep limits. Bind
+it to the same graph specification used for exact tree inference. The
+executor derives convergence, support failures, and the pre-normalization
+message masses from the live weights. These observations belong to the
+returned approximate result.
+
 ::: quivers.qiec.string_solvers.JointAlignmentMapConfig
 
 ::: quivers.qiec.string_solvers.RegularStringEPConfig
+
+::: quivers.qiec.string_solvers.PrunedStringBPConfig
