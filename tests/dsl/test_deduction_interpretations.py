@@ -12,6 +12,7 @@ from quivers.dsl.emit import module_to_source
 from quivers.dsl.parser import parse
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import qiec_binding_map
+from quivers.qiec.execution import ExecutionFailure
 from quivers.qiec.module import QiecModule
 from quivers.qiec.program_runtime import run_program
 from quivers.qiec.serialization import dumps, loads
@@ -252,3 +253,157 @@ def test_interpretation_rejects_invalid_signatures_and_source_maps(
     with pytest.raises(QiecDiagnosticError, match=message) as raised:
         load_source(GRAMMAR.replace(old, new))
     assert raised.value.line > 0
+
+
+PROOF_OUTCOMES = (
+    GRAMMAR[: GRAMMAR.index("define elicit")]
+    .replace(
+        "    lexicon\n",
+        "    rule third : span(I, K, A, lex), span(K, J, D, lex) |- span(I, J, S, same)\n"
+        "    lexicon\n",
+    )
+    .replace(
+        "    axiom span = read_word",
+        "    rule third = square_left\n    axiom span = read_word",
+    )
+    .replace(
+        "    axiom span = is_x", "    rule third = left_truth\n    axiom span = is_x"
+    )
+    + """\
+define likelihood(rows : Mix__evidence__Outcomes) : Real !{} =
+    case rows motive => Real
+        Mix__evidence__outcome_end =>
+            return 0.0
+        Mix__evidence__outcome_entry(key, weight, tail) =>
+            let rest <- likelihood(tail)
+            if key then
+                return rest + 0.8 * exp(weight)
+            else
+                return rest + 0.3 * exp(weight)
+
+define cardinality(rows : Mix__evidence__Outcomes) : Real !{} =
+    case rows motive => Real
+        Mix__evidence__outcome_end =>
+            return 0.0
+        Mix__evidence__outcome_entry(key, weight, tail) =>
+            let rest <- cardinality(tail)
+            return 1.0 + rest
+
+program observed(limit : Int) : Token -> Result
+    let readings = parse_normalized_proof_outcomes(Mix, sentence, limit, evidence)
+    let answer <- likelihood(readings)
+    score response = log(answer)
+    return response
+
+program raw : Token -> Result
+    let readings = parse_proof_outcomes(Mix, sentence, 3, evidence)
+    let answer <- likelihood(readings)
+    return answer
+
+program cardinal : Token -> Result
+    let readings = parse_proof_outcomes(Mix, sentence, 3, evidence)
+    let count <- cardinality(readings)
+    return count
+
+export observed
+export raw
+export cardinal
+"""
+)
+
+
+def test_proof_keys_group_equal_meanings_within_one_identical_chart_item() -> None:
+    compiled = load_source(PROOF_OUTCOMES)
+    data = {"sentence": ("x", "y"), "limit": 3}
+    assert compiled.run("observed", data=data).log_joint == pytest.approx(
+        math.log((0.8 + 0.3 + 0.8) / 3)
+    )
+    assert compiled.run("cardinal", data={"sentence": data["sentence"]}).value == 2
+    with pytest.raises(ExecutionFailure, match="too-many-derivations"):
+        compiled.run("observed", data={**data, "limit": 2})
+    with pytest.raises(ExecutionFailure, match="without positive goal mass"):
+        compiled.run("observed", data={**data, "sentence": ("missing", "y")})
+    module = compiled.qiec
+    assert isinstance(module, QiecModule)
+    restored = loads(dumps(module))
+    assert isinstance(restored, QiecModule) and restored == module
+    weights = torch.tensor([-0.33, 0.45], dtype=torch.float64, requires_grad=True)
+    parameters = dict(zip(("Mix.lex.0", "Mix.lex.1"), weights.unbind(), strict=True))
+    actual = run_program(
+        restored, "observed", data=data, sites={}, parameters=parameters
+    )
+    # Proofs first and third share both one lexical choice and one Boolean
+    # meaning. Proof second has the same goal and a different meaning.
+    coefficients = weights.new_tensor([0.8, 0.3, 0.8])
+    derivations = weights[torch.tensor([0, 1, 0])]
+    expected = (derivations + coefficients.log()).logsumexp(0) - derivations.logsumexp(
+        0
+    )
+    torch.testing.assert_close(actual.log_joint, expected, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(
+        torch.autograd.grad(actual.log_joint, weights)[0],
+        torch.autograd.grad(expected, weights)[0],
+        atol=1e-12,
+        rtol=1e-12,
+    )
+    raw = run_program(
+        restored,
+        "raw",
+        data={"sentence": data["sentence"]},
+        sites={},
+        parameters=parameters,
+    )
+    torch.testing.assert_close(raw.value, (coefficients * derivations.exp()).sum())
+    calls = tuple(
+        event.detail["computation"]
+        for event in actual.result.trace
+        if event.event == "call.entered"
+        and event.detail["computation"]
+        in {"Mix__proofs", "Mix__evidence__key_outcomes"}
+    )
+    assert calls == ("Mix__proofs", "Mix__evidence__key_outcomes")
+
+
+def test_proof_keys_reject_swapped_proof_indices() -> None:
+    wrong_key = """\
+define bad[i : Nat, j : Nat, c : Mix__Term, f : Mix__Term](proof : Mix__SpanProof(j, i, c, f)) : Bool !{} =
+    return true
+
+"""
+    source = PROOF_OUTCOMES.replace("program observed", wrong_key + "program observed")
+    source = source.replace("limit, evidence)", "limit, bad)").replace(
+        "3, evidence)", "3, bad)"
+    )
+    source = source.replace("Mix__evidence__", "Mix__bad__")
+    with pytest.raises(QiecDiagnosticError, match="taking one Mix__SpanProof argument"):
+        load_source(source)
+
+
+def test_proof_keys_refuse_effects_and_locally_handled_effects() -> None:
+    effectful = PROOF_OUTCOMES.replace(
+        'define is_x(word : String) : Bool !{} =\n    return word == "x"',
+        """define is_x(word : String) : Bool !{audit} =
+    let value <- read_word(word)
+    return value == 2.0""",
+    )
+    with pytest.raises(QiecDiagnosticError, match="must be a pure computation"):
+        load_source(effectful)
+    masked = effectful.replace(
+        "define is_x(word : String) : Bool !{audit}",
+        "define inspect_word(word : String) : Bool !{audit}",
+    )
+    masked += """
+handler hide_effect for Inspection : Bool -> Bool [coverage=total, forwards=none, implementation=authored]
+    return value =>
+        return value
+    advance(value : Real) resumes 1 =>
+        resume(value + 1.0)
+
+define is_x(word : String) : Bool !{} =
+    handle audit with hide_effect in
+        inspect_word(word)
+"""
+    with pytest.raises(
+        QiecDiagnosticError, match="must be deterministic.*installs an effect handler"
+    ):
+        load_source(masked)
