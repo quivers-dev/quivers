@@ -219,6 +219,7 @@ from quivers.qiec.effects import (
     RowVariable,
 )
 from quivers.qiec.evidence import BranchGiven, Reflexivity
+from quivers.qiec._deduction_guards import _TermGuard
 from quivers.qiec.foreign import (
     DeductionLinearGoal,
     DeductionBooleanOutcomes,
@@ -496,6 +497,7 @@ _NODE_CLASSES = (
     DeductionProofs,
     _NodeBoundedDeductionProofs,
     DeductionBooleanOutcomes,
+    _TermGuard,
     DeductionOutcomeGrouping,
     DeductionOutcomeLaw,
     EffectRequest,

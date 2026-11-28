@@ -44,6 +44,7 @@ from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.identifiers import (
     ComputationId,
     EffectInstanceId,
+    FamilyId,
     HandlerId,
     QIEC_ABI,
     SiteProvenance,
@@ -727,14 +728,44 @@ def validate_module(module: QiecModule) -> KernelRegistry:
                             guard_bodies = {
                                 body.id: body for body in module.computations
                             }
-                        from quivers.qiec._deduction_guards import _guard_in_scope
+                        from quivers.qiec._deduction_guards import (
+                            _TermGuard,
+                            _guard_in_scope,
+                            _term_guard_in_scope,
+                        )
 
                         for guard in presentation.conditions:
                             outer = guard_bodies.get(guard.id)
-                            if (
-                                outer is None
-                                or _guard_in_scope(outer, presentation.name) != guard
-                            ):
+                            scoped = None
+                            if outer is not None:
+                                if isinstance(guard, _TermGuard):
+                                    owner = FamilyId.derive(
+                                        module.module,
+                                        "family",
+                                        f"{presentation.name}__Item",
+                                    )
+                                    family = registry.families.get(guard.item_family.id)
+                                    if (
+                                        guard.item_family.id != owner
+                                        or family != guard.item_family
+                                        or any(
+                                            registry.constructors.get(item.id) != item
+                                            for item in guard.item_constructors
+                                        )
+                                    ):
+                                        raise KernelError(
+                                            f"deduction term guard {guard.name!r} must "
+                                            "capture its exact outer item declarations"
+                                        )
+                                    scoped = _term_guard_in_scope(
+                                        outer,
+                                        presentation.name,
+                                        guard.item_family,
+                                        guard.item_constructors,
+                                    )
+                                else:
+                                    scoped = _guard_in_scope(outer, presentation.name)
+                            if scoped != guard:
                                 raise KernelError(
                                     f"deduction rule guard {guard.name!r} must match "
                                     "the outer module's checked computation"

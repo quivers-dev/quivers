@@ -131,6 +131,7 @@ from quivers.dsl.compiler._deduction_productions import (
 )
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
 from quivers.dsl.compiler._deduction_presentation import (
+    bind_deduction_guards,
     TERM_ITEM,
     DeductionPresentation,
     DeductionPresentationError,
@@ -911,6 +912,28 @@ def _is_span(pattern: Pattern) -> bool:
     )
 
 
+def _attach_deduction_guards(elaborator: _Elaborator, system: _System) -> None:
+    """Finish conditions on an existing checked pattern system."""
+    prepared = system.presentation_cell[0]
+    family = system.family_cell[0]
+    assert prepared is not None and family is not None
+    try:
+        bound = bind_deduction_guards(
+            prepared,
+            elaborator._deduction_guard_bodies,
+            (family, tuple(system.constructors.values())),
+        )
+    except DeductionPresentationError as refusal:
+        elaborator._fail(refusal, str(refusal), code="qiec-program")
+    if bound is prepared:
+        return
+    system.presentation_cell[0] = bound
+    system.rules[:] = [
+        rule.with_(presented=item)
+        for rule, item in zip(system.rules, bound.rules, strict=True)
+    ]
+
+
 def _rule_positions(system: _System, rule: _Rule) -> list[str]:
     """The variables a rule uses in integer slots, in first-occurrence order.
 
@@ -1380,8 +1403,16 @@ class _DeductionElaboration:
     elaborated, so a program body can call a deduction's entry.
     """
 
-    def _declare_deduction_declarations(self: _Elaborator) -> None:
+    def _declare_deduction_declarations(
+        self: _Elaborator, *, defer_guards: bool = False
+    ) -> None:
         """Declare each deduction's item family, effect, and instances.
+
+        Parameters
+        ----------
+        defer_guards
+            Declare the generated item families before checking guards
+            that reference their constructor values.
 
         Raises
         ------
@@ -1437,8 +1468,23 @@ class _DeductionElaboration:
         }
         self._declare_deduction_effects()
         self._program_instance(PARAMS_INSTANCE, "Param")
+        prepared = {}
+        if defer_guards:
+            # The existing pattern reader determines the exact nominal Item
+            # family. Complete those declarations before checking guard code.
+            for declaration in declarations:
+                system = self._read_deduction(declaration, defer_guards=True)
+                self._declare_item_family(system)
+                prepared[declaration.name] = system
+            self._declare_deduction_guard_operations(
+                item_types=frozenset(system.item for system in prepared.values())
+            )
         for declaration in declarations:
-            system = self._read_deduction(declaration)
+            if defer_guards:
+                system = prepared[declaration.name]
+                _attach_deduction_guards(self, system)
+            else:
+                system = self._read_deduction(declaration)
             presented = system.presentation_cell[0]
             assert presented is not None
             if presented.presentation.conditions:
@@ -1482,7 +1528,8 @@ class _DeductionElaboration:
                 system.schema_words_cell[0] = tuple(
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
-            self._declare_item_family(system)
+            if not defer_guards:
+                self._declare_item_family(system)
             if (linear := linear_calls.get(declaration.name)) is not None:
                 self._linear_goal_queries[declaration.name] = self._declare_linear_goal(
                     system, linear
@@ -1958,13 +2005,18 @@ class _DeductionElaboration:
         self.effects[SEARCH_EFFECT] = effect
         self.registry.register_effect(effect)
 
-    def _read_deduction(self: _Elaborator, declaration: DeductionDecl) -> _System:
+    def _read_deduction(
+        self: _Elaborator, declaration: DeductionDecl, *, defer_guards: bool = False
+    ) -> _System:
         """Read a declaration's options, rules, and lexicon into patterns.
 
         Parameters
         ----------
         declaration : DeductionDecl
             The declaration.
+        defer_guards
+            Finish the matched patterns before checking and attaching
+            guards that use the generated item declarations.
 
         Returns
         -------
@@ -2029,7 +2081,7 @@ class _DeductionElaboration:
             )
         try:
             presented = deduction_presentation(
-                declaration, self._deduction_guard_bodies
+                declaration, self._deduction_guard_bodies, defer_guards=defer_guards
             )
         except DeductionPresentationError as refusal:
             self._fail(refusal, str(refusal), code="qiec-program")

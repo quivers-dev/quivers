@@ -1740,8 +1740,10 @@ class _Elaborator(
         self._declare_instances()
         self._declare_program_instances()
         self._build_registry()
-        self._declare_deduction_guard_operations()
-        self._declare_deduction_declarations()
+        term_guards = self._uses_deduction_item_guards()
+        if not term_guards:
+            self._declare_deduction_guard_operations()
+        self._declare_deduction_declarations(defer_guards=term_guards)
         self._declare_structural_signatures()
         scoped_interpretations = declare_scoped_types(self)
         self._declare_computation_signatures()
@@ -2424,7 +2426,38 @@ class _Elaborator(
                     raise
                 self._fail_kernel(node, error, fallback="qiec-handler")
 
-    def _declare_deduction_guard_operations(self) -> None:
+    def _uses_deduction_item_guards(self) -> bool:
+        """Find guards needing deduction families before their type check."""
+        deductions = tuple(
+            item
+            for item in self._items(surface.DeductionDecl)
+            if isinstance(item, surface.DeductionDecl)
+        )
+        names = frozenset(
+            name
+            for deduction in deductions
+            for name in deduction_guard_names(deduction)
+        )
+        item_types = {f"{deduction.name}__Item" for deduction in deductions}
+        return any(
+            (
+                isinstance(parameter.type_expr, surface.QiecTypeName)
+                and parameter.type_expr.name in item_types
+            )
+            or (
+                isinstance(parameter.type_expr, surface.QiecTypeApplication)
+                and not parameter.type_expr.static_arguments
+                and not parameter.type_expr.indices
+                and parameter.type_expr.constructor in item_types
+            )
+            for item in self._items(surface.QiecComputationDecl)
+            if isinstance(item, surface.QiecComputationDecl) and item.name in names
+            for parameter in item.parameters
+        )
+
+    def _declare_deduction_guard_operations(
+        self, *, item_types: frozenset[TypeApplication] = frozenset()
+    ) -> None:
         """Prepare the closed guard bodies before declaring guarded rules."""
         names = frozenset(
             name
@@ -2441,8 +2474,17 @@ class _Elaborator(
             if isinstance(item, surface.QiecComputationDecl) and item.name in names
         }
         for body in self._declare_computations(only=names):
+            item_type = next(
+                (
+                    type_
+                    for parameter in body.parameters
+                    if isinstance(type_ := parameter.type, TypeApplication)
+                    and type_ in item_types
+                ),
+                None,
+            )
             try:
-                _check_guard_body(body)
+                _check_guard_body(body, item_type)
             except RuleError as error:
                 self._fail(
                     declarations[body.name],

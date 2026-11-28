@@ -62,10 +62,16 @@ from quivers.dsl.compiler._deduction_positions import (
 from quivers.dsl.compiler._deduction_terms import atom_term
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
 from quivers.dsl.compiler._options import find_option, get_option_flag
-from quivers.qiec._deduction_guards import _coordinate_arguments, _guard_in_scope
+from quivers.qiec._deduction_guards import (
+    _TermGuard,
+    _check_guard_body,
+    _guard_in_scope,
+    _matched_arguments,
+    _term_guard_in_scope,
+)
 from quivers.qiec._models import QiecModel
 from quivers.qiec.contracts import ParameterId, PresentationId
-from quivers.qiec.declarations import FieldDef
+from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.identifiers import ConstructorId, FamilyId
 from quivers.qiec.kinds import NAT, IndexBinder, IndexSort, UserIndexSort
 from quivers.qiec.module import NamedComputation
@@ -76,11 +82,14 @@ from quivers.qiec.rules import (
     JudgmentDecl,
     Premise,
     Rule,
+    RuleError,
     RulePresentation,
     SideCondition,
 )
 from quivers.qiec.types import (
+    INT,
     STRING,
+    TypeApplication,
     IndexConstructor,
     IndexLiteral,
     IndexTerm,
@@ -749,7 +758,11 @@ def deduction_guard_names(decl: DeductionDecl) -> frozenset[str]:
 
 
 def deduction_presentation(
-    decl: DeductionDecl, guards: Mapping[str, NamedComputation] | None = None
+    decl: DeductionDecl,
+    guards: Mapping[str, NamedComputation] | None = None,
+    *,
+    item_declarations: tuple[FamilyDecl, tuple[ConstructorDecl, ...]] | None = None,
+    defer_guards: bool = False,
 ) -> DeductionPresentation:
     """Read a deduction into its rule presentation.
 
@@ -758,7 +771,11 @@ def deduction_presentation(
     decl : DeductionDecl
         The declaration.
     guards : Mapping of str to NamedComputation or None
-        The module's checked scalar rule guards, if any.
+        The module's checked rule guards, if any.
+    item_declarations
+        The owning generated item family and its constructors, when visible.
+    defer_guards
+        Read the matched patterns while their item declarations are being prepared.
 
     Returns
     -------
@@ -902,7 +919,6 @@ def deduction_presentation(
         )
 
     rules: list[DeductionRule] = []
-    used_guards: dict[str, NamedComputation] = {}
     forms = list(reader.families)
     computed_names = {
         rule.name
@@ -954,27 +970,6 @@ def deduction_presentation(
             )
         elif learnable or parent_name is not None:
             weight = ParameterId.derive(decl.name, "rule", rule.name)
-        guard_options = tuple(
-            option for option in rule.options if option.key == "guard"
-        )
-        guard = None
-        if guard_options:
-            option = guard_options[0]
-            if len(guard_options) != 1 or not isinstance(option.value, OptionName):
-                raise DeductionPresentationError(
-                    f"rule {rule.name!r} guard must name one checked Bool computation",
-                    rule.line,
-                    rule.col,
-                )
-            guard = (guards or {}).get(option.value.value)
-            if guard is None:
-                raise DeductionPresentationError(
-                    f"rule {rule.name!r} guard names no checked computation {option.value.value!r}",
-                    rule.line,
-                    rule.col,
-                )
-            if guard.name not in used_guards:
-                used_guards[guard.name] = _guard_in_scope(guard, decl.name)
         choices = _instances(reader, [*premises, conclusion], forms, variables)
         for choice in choices:
             telescope = dict(variables)
@@ -999,20 +994,6 @@ def deduction_presentation(
                 conclusion=judgment(*items[-1]),
                 weight=weight,
             )
-            if guard is not None:
-                coordinates = _coordinate_arguments(presented)
-                if len(guard.parameters) != len(coordinates):
-                    raise DeductionPresentationError(
-                        f"rule {rule.name!r} guard {guard.name!r} expects its "
-                        f"matched Int coordinates in telescope order {coordinates!r}",
-                        rule.line,
-                        rule.col,
-                    )
-                presented = presented.with_(
-                    side_condition=SideCondition(
-                        computation=guard.id, arguments=coordinates
-                    )
-                )
             rules.append(
                 DeductionRule(
                     rule=presented,
@@ -1053,15 +1034,134 @@ def deduction_presentation(
         judgments=judgments,
         rules=tuple(item.rule for item in rules),
         axioms=tuple(axioms),
-        conditions=tuple(used_guards.values()),
     )
-    return DeductionPresentation(
+    prepared = DeductionPresentation(
         presentation=presentation,
         rules=tuple(rules),
         forms=dict(reader.forms),
         slots=reader.slots,
         uses_forms=reader.uses_forms,
         atoms=reader.atoms,
+    )
+
+    return (
+        prepared
+        if defer_guards
+        else bind_deduction_guards(prepared, guards or {}, item_declarations)
+    )
+
+
+def bind_deduction_guards(
+    prepared: DeductionPresentation,
+    guards: Mapping[str, NamedComputation],
+    item_declarations: tuple[FamilyDecl, tuple[ConstructorDecl, ...]] | None,
+) -> DeductionPresentation:
+    """Attach checked guards to the rule telescopes that already bind their fields.
+
+    Parameters
+    ----------
+    prepared
+        The rule presentation and patterns read once from the deduction.
+    guards
+        Named QIEC operations checked in the owning source module.
+    item_declarations
+        The owner's closed item declarations where term guards are permitted.
+
+    Returns
+    -------
+    DeductionPresentation
+        The same rule patterns and identities carrying their checked guards.
+
+    Raises
+    ------
+    DeductionPresentationError
+        If a guard name, ordered signature, or portable body fails checking.
+    """
+    used: dict[str, NamedComputation] = {}
+    rules: list[DeductionRule] = []
+    owner = prepared.presentation.name
+    item_type = (
+        TypeApplication(constructor=item_declarations[0].type_constructor, arguments=())
+        if item_declarations is not None
+        else None
+    )
+    for item in prepared.rules:
+        source = item.source
+        options = tuple(entry for entry in source.options if entry.key == "guard")
+        if not options:
+            rules.append(item)
+            continue
+        option = options[0].value
+        if len(options) != 1 or not isinstance(option, OptionName):
+            raise DeductionPresentationError(
+                f"rule {source.name!r} guard must name one checked Bool computation",
+                source.line,
+                source.col,
+            )
+        body = guards.get(option.value)
+        if body is None:
+            raise DeductionPresentationError(
+                f"rule {source.name!r} guard names no checked computation {option.value!r}",
+                source.line,
+                source.col,
+            )
+        checked = used.get(body.name)
+        if checked is None:
+            try:
+                if item_declarations is not None and any(
+                    parameter.type == item_type for parameter in body.parameters
+                ):
+                    checked = _term_guard_in_scope(body, owner, *item_declarations)
+                else:
+                    if item_type is not None and any(
+                        isinstance(parameter.type, TypeApplication)
+                        and parameter.type.constructor.name.endswith("__Item")
+                        for parameter in body.parameters
+                    ):
+                        raise RuleError(
+                            "a term guard requires its own deduction's Item type"
+                        )
+                    _check_guard_body(body)
+                    checked = _guard_in_scope(body, owner)
+            except (RuleError, dx.ValidationError) as error:
+                raise DeductionPresentationError(
+                    str(error), source.line, source.col
+                ) from error
+            used[body.name] = checked
+        arguments = _matched_arguments(item.rule, checked)
+        required = tuple(
+            INT if isinstance(binder, IndexBinder) and binder.sort == NAT else item_type
+            for binder in item.rule.telescope
+            if binder.name in arguments
+        )
+        if tuple(parameter.type for parameter in body.parameters) != required:
+            fields = (
+                "matched Int coordinates"
+                if not isinstance(checked, _TermGuard)
+                else "matched Int and owned Item fields"
+            )
+            raise DeductionPresentationError(
+                f"rule {source.name!r} guard {body.name!r} expects its "
+                f"{fields} in telescope order {arguments!r}",
+                source.line,
+                source.col,
+            )
+        rules.append(
+            item.with_(
+                rule=item.rule.with_(
+                    side_condition=SideCondition(
+                        computation=checked.id, arguments=arguments
+                    )
+                )
+            )
+        )
+    if not used:
+        return prepared
+    return prepared.with_(
+        presentation=prepared.presentation.with_(
+            rules=tuple(item.rule for item in rules), conditions=tuple(used.values())
+        ),
+        rules=tuple(rules),
     )
 
 

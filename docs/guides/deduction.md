@@ -560,6 +560,20 @@ separately. A runtime error in a guard fails any query that reaches it.
 The indexed query can check matches outside the goal. The equality
 of the inside sums assumes that the guard evaluations succeed.
 
+#### Guards on matched terms
+
+A guard can also take matched constructor terms at the deduction's
+generated `D__Item` type. That signature contains the entire matched
+telescope in order, with each position variable at `Int` and each term
+variable at `D__Item`. It can use exhaustive `case` on those terms and their
+matched children, alongside the scalar operations. The deduction's own
+constructor declarations determine the type and field order. A guard still
+has no static parameters, named calls, or effects. A packed lexical query
+uses the closed constructor vocabulary of the rule presentation, so an
+applied symbol in a lexical form must have its arity established in the
+rule patterns. The grounded route reconstructs each matched term once
+per argument occurrence, checking its constructors in field order.
+
 Checked scalar `parse`, `run_deduction`, and lexical item outcome queries
 use the same checked guard body. The indexed query calls the guard once per
 completed candidate binding and reports this count in its trace. If there

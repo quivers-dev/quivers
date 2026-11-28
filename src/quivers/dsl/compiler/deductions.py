@@ -97,6 +97,7 @@ from quivers.stochastic.semiring import (
     VITERBI as SEMIRING_VITERBI,
 )
 from quivers.dsl.compiler._lexicon_files import load_lexicon_tsv
+from quivers.qiec.identifiers import FamilyId
 from quivers.qiec.kinds import NAT, IndexBinder
 from quivers.qiec.rules import ComputedRuleWeight
 from quivers.dsl.compiler._deduction_presentation import (
@@ -809,8 +810,22 @@ class _DeductionsMixin:
             if module is not None
             else None
         )
+        item_declarations = None
+        if module is not None:
+            family_id = FamilyId.derive(module.module, "family", f"{decl.name}__Item")
+            family = next(
+                (item for item in module.families if item.id == family_id), None
+            )
+            if family is not None:
+                constructors = {item.id: item for item in module.constructors}
+                item_declarations = (
+                    family,
+                    tuple(constructors[identity] for identity in family.constructors),
+                )
         try:
-            presented = deduction_presentation(decl, guards)
+            presented = deduction_presentation(
+                decl, guards, item_declarations=item_declarations
+            )
         except DeductionPresentationError as refusal:
             raise CompileError(str(refusal), refusal.line, refusal.col) from refusal
         _uses_lf = presented.uses_forms

@@ -719,8 +719,9 @@ class DeductionOutcomes(QiecModel):
             raise ValueError("deduction outcomes do not interpret proof equations")
         if presentation.conditions:
             from quivers.qiec._deduction_guards import (
+                _TermGuard,
                 _check_guard_body,
-                _coordinate_arguments,
+                _matched_arguments,
             )
 
             used = set()
@@ -728,15 +729,25 @@ class DeductionOutcomes(QiecModel):
                 condition = rule.side_condition
                 if condition is None:
                     continue
-                if condition.arguments != _coordinate_arguments(rule):
-                    raise ValueError(
-                        "deduction outcome guards require the ordered matched Int fields"
+                guard = presentation.conditions_by_id[condition.computation]
+                if condition.arguments != _matched_arguments(rule, guard):
+                    fields = (
+                        "ordered matched Int and owned Item fields"
+                        if isinstance(guard, _TermGuard)
+                        else "ordered matched Int fields"
                     )
+                    raise ValueError(f"deduction outcome guards require the {fields}")
                 used.add(condition.computation)
             if used != presentation.conditions_by_id.keys():
                 raise ValueError("deduction outcomes carry unused rule guard bodies")
             for guard in presentation.conditions:
-                _check_guard_body(guard)
+                if isinstance(guard, _TermGuard):
+                    if guard.item_type != self.item_type:
+                        raise ValueError(
+                            "deduction outcome guard must read the checked item family"
+                        )
+                else:
+                    _check_guard_body(guard)
         if len(presentation.judgments) != 1 or len(presentation.axioms) != 1:
             raise ValueError("deduction outcomes require one lexical span judgment")
         (form,) = presentation.judgments

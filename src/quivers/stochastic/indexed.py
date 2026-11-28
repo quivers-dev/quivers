@@ -21,6 +21,7 @@ from typing import Literal
 import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.qiec._deduction_guards import _matched_value
 from quivers.qiec.contracts import Phase, WorkField, WorkReport, measuring
 from quivers.stochastic.tries import Trie, TrieCounter, descend, insert, intersect
 from quivers.qiec.evaluator import Evaluator
@@ -353,7 +354,9 @@ def side_condition_holds(
     ):
         if name not in binding:
             raise MatchError(f"the side condition of {rule.name!r} reads {name!r}")
-        environment[parameter] = binding[name]
+        environment[parameter] = _matched_value(
+            computation, rule, name, parameter, binding[name]
+        )
     return bool(Evaluator().evaluate(computation.body, environment))
 
 
