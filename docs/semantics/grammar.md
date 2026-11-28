@@ -808,6 +808,12 @@ operand order specifies the tape to synchronize. The two shared tape
 types and the scalar algebras must agree. The composed relation
 exposes a `pair_weight` score.
 
+A `string_graph` declares nominal variables and ordered occurrences
+of authored sparse factors. A variable can supply a fixed word,
+including the empty word. Each factor names its relation and lists
+one distinct variable per tape. A `string_graph_score` can bind the
+resulting graph identity.
+
 A closed `relation_score` may specify the authored relation it uses.
 Its identity then binds the ordered topology, scalar algebra, and
 weight identities. The host supplies the observation and a checked

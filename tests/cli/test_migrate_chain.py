@@ -100,6 +100,11 @@ def test_relation_score_keywords_are_contextual_for_old_source() -> None:
     assert compose_migration("v0.64.2", "HEAD")(source) == source
 
 
+def test_authored_graph_keywords_are_contextual_for_old_source() -> None:
+    source = b"object string_graph, variable, observed, graph : FinSet 2\n"
+    assert compose_migration("v0.64.2", "HEAD")(source) == source
+
+
 def test_string_graph_score_keywords_are_contextual_for_old_source() -> None:
     source = (
         b"object string_graph_score : FinSet 2\n"

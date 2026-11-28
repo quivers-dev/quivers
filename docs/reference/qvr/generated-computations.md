@@ -323,3 +323,44 @@ request supplies the two outer words, the original scalar parameter
 bindings, and the product and query limits. Markov pair scores return
 `Real`. LogProb pair scores return `LogWeight`. This declaration
 accepts two primitive operands and exposes pair weights.
+
+## Authored string factor graphs
+
+A string graph declares variables, their observations, and ordered
+factor scopes. A factor names the primitive relation applied to its
+scope. The variable order within each scope follows that relation's
+tape order.
+
+<!-- compile: qiec -->
+```qvr
+object Letters : FinSet 2
+
+string_graph chain
+    variable source : Letters
+    variable middle : Letters
+    variable response : Letters [observed=(1)]
+    factor edit(source, middle)
+    factor edit(middle, response)
+
+string_graph_score evidence : Real [operation=tree_partition, graph=chain]
+
+relation edit [algebra=markov, states=2]
+    input Letters
+    output Letters
+    initial 0 [weight=one]
+    arc 0 -> 1 [labels=(0, 1), weight=change]
+    arc 0 -> 1 [labels=(1, 1), weight=keep]
+    final 1 [weight=one]
+```
+
+A variable without an observation ranges over the words on its tape.
+The expression `[observed=()]` fixes the empty word. When different
+factors name the same relation, they share its weights and still
+contribute at separate graph positions.
+
+`Compiler.string_graph_specs["chain"]` gives the checked
+`StringFactorGraphSpec`. The `TreeStringGraphRequest` supplies a
+query variable, an optional separately scored word, and sparse work
+limits. An authored score fixes the named graph's variables,
+observations, factor order, and relation topology. The runtime binds concrete parameter values
+and verifies the forest precondition before running the tree query.

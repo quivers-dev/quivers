@@ -110,6 +110,15 @@ NODE_PATTERNS = """\
 (relation_score_decl relation: (identifier) @type)
 (relation_score_decl name: (identifier) @function)
 (relation_score_operation) @keyword
+(string_graph_decl "string_graph" @keyword)
+(string_graph_decl name: (identifier) @type)
+(string_graph_variable "variable" @keyword)
+(string_graph_variable name: (identifier) @variable)
+(string_graph_variable alphabet: (identifier) @type)
+(string_graph_factor "factor" @keyword)
+(string_graph_factor relation: (identifier) @type)
+(string_graph_factor scope: (identifier) @variable)
+(string_graph_score_decl graph: (identifier) @type)
 (string_graph_score_decl name: (identifier) @function)
 (string_graph_score_operation) @keyword
 (interpretation_decl name: (identifier) @function)

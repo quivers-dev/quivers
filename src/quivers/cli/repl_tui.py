@@ -951,6 +951,8 @@ def _populate_scope_tree(root, session, keep, *, filter_text):  # type: ignore[n
         "instance": "qiec instances",
         "handler": "qiec handlers",
         "computation": "qiec computations",
+        "relation": "qiec relations",
+        "string-graph": "qiec string graphs",
     }
     for kind, bindings in grouped.items():
         cat_node = root.add(headings[kind], expand=True)
