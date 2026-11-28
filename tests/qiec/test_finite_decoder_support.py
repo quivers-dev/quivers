@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import didactic.api as dx
 import pytest
 import torch
 
 from quivers.dsl import loads as load_source
+from quivers.qiec import structural_runtime
 from quivers.qiec import FiniteDecoderSupport
 from quivers.qiec.builtins import (
     RANDOM,
@@ -47,8 +50,8 @@ signature Example
 """
 
 
-def _decoder() -> Decoder:
-    signature = load_source(SIG).signatures["Example"]
+def _decoder(source: str = SIG) -> Decoder:
+    signature = load_source(source).signatures["Example"]
     return Decoder(
         name="finite-test",
         signature=signature,
@@ -225,3 +228,99 @@ def test_decoder_conditioning_refuses_zero_mass() -> None:
     )
     with pytest.raises(dx.ValidationError, match="without positive mass"):
         support.distribution(torch.tensor([-torch.inf, 0.0, 0.0, 0.0]))
+
+
+def test_complete_bounded_support_is_the_unconditional_decoder_law() -> None:
+    decoder = _decoder()
+    support = FiniteDecoderSupport.complete(decoder, sort="Tree", max_candidates=6)
+    assert support.candidates == tuple(
+        make_term(name, *children)
+        for name, children in (
+            ("A", ()),
+            ("B", ()),
+            ("C", ()),
+            ("Branch", (make_term("A"),)),
+            ("Branch", (make_term("B"),)),
+            ("Branch", (make_term("C"),)),
+        )
+    )
+    code = torch.tensor([0.1, -0.3, 1.2, 0.7], dtype=torch.float64, requires_grad=True)
+    law = support.distribution(code)
+    root = torch.log_softmax(code, 0)
+    leaf = torch.log_softmax(code[:3] * 0.5 + 0.2, 0)
+    exact = torch.cat((root[:3], root[3] + leaf))
+    torch.testing.assert_close(exact.exp().sum(), code.new_ones(()))
+    actual = torch.stack([mass for _, mass in law.weighted_support()])
+    torch.testing.assert_close(actual, exact)
+    (found,) = torch.autograd.grad(actual[-1], code)
+    (expected,) = torch.autograd.grad(exact[-1], code)
+    torch.testing.assert_close(found, expected)
+    decoder.depth += 1
+    with pytest.raises(ValueError, match="depth or vocabulary changed"):
+        support.distribution(code)
+
+
+def test_complete_bounded_support_counts_before_building_terms(monkeypatch) -> None:
+    decoder = _decoder(
+        SIG.replace("Branch : Tree -> Tree", "Pair : Tree, Tree -> Tree")
+    )
+    exact = FiniteDecoderSupport.complete(decoder, sort="Tree", max_candidates=12)
+    assert len(exact.candidates) == 3 + 3 * 3
+    a, b = make_term("A"), make_term("B")
+    assert make_term("Pair", a, b) in exact.candidates
+    assert make_term("Pair", b, a) in exact.candidates
+
+    def cannot_materialize(*_args):
+        pytest.fail("term materialization must follow the checked cap")
+
+    monkeypatch.setattr(structural_runtime, "make_term", cannot_materialize)
+    with pytest.raises(ValueError, match="exceeds the 11 candidate limit"):
+        FiniteDecoderSupport.complete(decoder, sort="Tree", max_candidates=11)
+
+
+def test_complete_bounded_support_validates_only_reachable_sort_depth_pairs() -> None:
+    source = SIG.replace("OtherLeaf : -> Other", "DeadStep : Other -> Other")
+    complete = FiniteDecoderSupport.complete(
+        _decoder(source), sort="Tree", max_candidates=6
+    )
+    assert len(complete.candidates) == 6
+    coupled = source + "        UseDead : Other -> Tree\n"
+    with pytest.raises(
+        ValueError, match="sort 'Other' at depth 0:.*depth budget exhausted"
+    ):
+        FiniteDecoderSupport.complete(
+            _decoder(coupled), sort="Tree", max_candidates=100
+        )
+
+
+@pytest.mark.parametrize("words", [("up", "down"), (1, 2)])
+def test_complete_bounded_support_uses_the_closed_data_vocabulary(words) -> None:
+    source = f"""\
+signature Example
+    sorts
+        Tree : object [dim=4]
+        Word : data [dim=4, vocab={json.dumps(words)}]
+    constructors
+        Say : Word -> Tree
+"""
+    decoder = _decoder(source)
+    decoder.structure_fns["Tree"] = lambda code: code[:1]
+    decoder.primitive_fns["Word"] = lambda code: code[:2]
+    decoder.data_vocab["Word"] = list(words)
+    support = FiniteDecoderSupport.complete(decoder, sort="Tree", max_candidates=2)
+    assert support.candidates == tuple(make_term("Say", word) for word in words)
+    code = torch.tensor([0.2, 0.8, 0.0, 0.0], dtype=torch.float64)
+    expected = torch.log_softmax(code[:2] * 0.5 + 0.2, 0)
+    actual = torch.stack(
+        [mass for _, mass in support.distribution(code).weighted_support()]
+    )
+    torch.testing.assert_close(actual, expected)
+    if words == (1, 2):
+        decoder.data_vocab["Word"] = [True, 2]
+        with pytest.raises(ValueError, match="vocabulary changed"):
+            support.distribution(code)
+    decoder.data_vocab["Word"] = [words[0], words[0]]
+    with pytest.raises(ValueError, match="nonempty vocabulary without duplicates"):
+        FiniteDecoderSupport.complete(decoder, sort="Tree", max_candidates=10)
+    with pytest.raises(ValueError, match="vocabulary changed"):
+        support.distribution(code)
