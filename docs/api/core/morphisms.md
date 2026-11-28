@@ -420,6 +420,33 @@ compatible observation arcs count toward the explicit work budget.
 The bound on consecutive insertions is part of the channel model, and the scorer
 can use the whole input as context for each edit.
 
+### Packed training on a contextual channel
+
+A two-layer scorer reads each word's remaining suffix and the current
+insertion count. The training fixture observes paired binary strings and
+fits their conditional log likelihood. Both execution modes reuse their
+observation plans and start with the same neural parameters. The benchmark
+checks the loss at all four updates and compares the final parameters.
+The singleton mode concatenates the individual scores before each backward
+pass so both modes optimize the same batch mean.
+
+| Batch size | Mode | Update ms | Peak Python KiB | Saved tape KiB | Final loss |
+| --- | --- | --- | --- | --- | --- |
+| 4 | Packed | 2.54 | 20.0 | 25.5 | 4.152484 |
+| 4 | Singletons | 5.45 | 36.3 | 22.7 | 4.152484 |
+| 16 | Packed | 2.32 | 35.8 | 104.2 | 4.248501 |
+| 16 | Singletons | 22.92 | 130.7 | 95.2 | 4.248501 |
+| 64 | Packed | 5.69 | 133.9 | 418.8 | 4.332192 |
+| 64 | Singletons | 114.46 | 509.0 | 384.1 | 4.332192 |
+
+Times are medians per update across three warmed runs on one arm64 CPU
+thread with PyTorch 2.15. They include scoring, backward, and parameter
+updates. The two memory columns measure peak Python allocations and
+unique tensor storage saved for backward in separate runs. At batch size
+64, packing reduced Python allocations while retaining more saved tensor
+storage. To reproduce the comparison, run
+`python tools/benchmark_contextual_edits.py` from the repository checkout.
+
 ### Path entropy and additive risk
 
 `FixedStringQuery.path_statistics` uses packed prefix and suffix
