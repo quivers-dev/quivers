@@ -1009,6 +1009,17 @@ grammar. QIEC's step budget applies to the interpreted computation
 and its truth calls. The packed host fold uses its separate finite
 grounding contract.
 
+The opt-in CPU benchmark checks the likelihood and gradient at every
+refit against a closed form. It reports forward and reverse tensor
+dispatch, logical saved elements, the tensor allocator peak, and the
+traced Python peak separately. For this fixture it checks the derived
+autograd tape bound of $28n+20$ saved elements. Run it from the
+repository root.
+
+```bash
+python -m tests.benchmarks.packed_boolean_outcomes
+```
+
 #### Encoding two proofs of one logical form
 
 The [shared proof encoder](../examples/qiec/shared-proof-encoder.qvr)
