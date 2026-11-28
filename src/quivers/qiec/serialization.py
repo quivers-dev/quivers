@@ -119,6 +119,7 @@ from quivers.qiec.contracts import (
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.relations import FixedRelationRequest, RationalRelationSpec
+from quivers.qiec.string_graphs import StringFactorGraphSpec
 from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
@@ -341,6 +342,7 @@ _NODE_CLASSES = (
     FamilyShapeSignature,
     FixedRelationRequest,
     RationalRelationSpec,
+    StringFactorGraphSpec,
     # source identity and kinds
     SourceOrigin,
     DynamicAddressFrame,

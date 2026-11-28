@@ -358,6 +358,7 @@ from quivers.qiec.reference_support import (
 )
 from quivers.qiec.relation_runtime import FixedRelationRuntimeProvider
 from quivers.qiec.relations import FixedRelationRequest, RationalRelationSpec
+from quivers.qiec.string_graphs import StringFactorGraphSpec
 from quivers.qiec.serialization import (
     JsonValue,
     QIEC_WIRE_FORMAT,
@@ -663,6 +664,7 @@ __all__ = [
     "FixedRelationRequest",
     "FixedRelationRuntimeProvider",
     "RationalRelationSpec",
+    "StringFactorGraphSpec",
     "Reachability",
     "Reduction",
     "ReductionOperator",
