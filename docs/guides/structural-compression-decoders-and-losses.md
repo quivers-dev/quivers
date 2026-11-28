@@ -283,6 +283,17 @@ requires the compiled decoder attachment with the same carrier and
 bound. The namespaced values coexist with the opaque term type used
 by the original structural decoder and encoder computations.
 
+Within the invocation that prepares a decoder law, the native attachment
+registers that specific law as duplicable. It has fresh log masses and shares
+its checked immutable candidate terms. An unrestricted finite enumeration
+uses the same masses in each resumption and runs the encoder at that shot’s
+term. A law passed in from a different invocation needs its own provider
+assertion before a multi-shot handler can capture it. For $q$ preparations
+at support size $s$, the invocation retains $q$ law records and $qs$ log
+masses. It also retains the autograd graphs that computed those masses,
+whose size depends on the decoder and the terms. The candidate term trees
+are shared across preparations of the same support.
+
 ## Stdlib decoders
 
 `quivers.structural.shapes` provides decoders to match its encoders:

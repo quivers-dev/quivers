@@ -15,7 +15,12 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.qiec.builtins import compute_handler
-from quivers.qiec.canonical import LOG_WEIGHT, sampled_element, tensor_shape
+from quivers.qiec.canonical import (
+    LOG_WEIGHT,
+    sampleable_type,
+    sampled_element,
+    tensor_shape,
+)
 from quivers.qiec.deduction_outcomes import validate_outcome_key
 from quivers.qiec.effects import EffectRef, HandlerDef
 from quivers.qiec.evaluator import (
@@ -1010,15 +1015,15 @@ def _component_function(
                 f"decoder {decoder.name!r} has no complete support of the checked type"
             )
 
-        def law(argument: object, _context: ClauseContext) -> FiniteSampleable:
+        def law(argument: object, context: ClauseContext) -> FiniteSampleable:
             """Evaluate the prepared support at one checked embedding.
 
             Parameters
             ----------
             argument
                 The embedding and the limit recorded in the checked module.
-            _context
-                The enclosing clause, unused by the deterministic decoder.
+            context
+                The invocation holding the producer’s exact ownership assertion.
 
             Returns
             -------
@@ -1041,7 +1046,18 @@ def _component_function(
                 raise TypeError(
                     f"decoder {decoder.name!r} does not match the checked support limit"
                 )
-            return support.distribution(decoder, argument[0])
+            result = support.distribution(decoder, argument[0])
+            # This producer owns the fresh log-mass tensor and the law only
+            # reads it. The validated candidate terms are immutable machine
+            # values. Native Random owns the draw effect and this result
+            # carries no mutable backend override.
+            context.attach(
+                result,
+                sampleable_type(support.element),
+                role="finite-decoder-law",
+                duplicable=True,
+            )
+            return result
 
         return law
     if role == "decoder-nll":
