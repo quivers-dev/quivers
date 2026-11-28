@@ -64,6 +64,7 @@ __all__ = [
     "ProductiveEpsilonCycleError",
     "QueryWork",
     "RationalRelation",
+    "RegularNgramProjection",
     "RelationLimitError",
     "RelationPath",
     "RelationTopology",
@@ -89,6 +90,7 @@ __all__ = [
     "intersect",
     "invert",
     "join",
+    "penalized_regular_ngram_projection",
     "project",
     "trim",
     "union",
@@ -660,3 +662,8 @@ from quivers.core.relations.marginal_map import (  # noqa: E402
     best_marginal_output,
 )
 from quivers.core.relations.ngram_message import NgramMessagePlan  # noqa: E402
+
+from quivers.core.relations.regular_projection import (  # noqa: E402
+    RegularNgramProjection,
+    penalized_regular_ngram_projection,
+)
