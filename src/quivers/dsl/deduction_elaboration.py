@@ -66,9 +66,12 @@ from quivers.qiec._models import QiecModel
 from quivers.dsl._deduction_chart import declare_chart, elaborate_chart
 from quivers.dsl._deduction_outcomes import (
     OUTCOME_CALLS,
+    OutcomeKey,
     OutcomeQuery,
+    declare_outcome_key_types,
     declare_outcomes,
     elaborate_outcomes,
+    outcome_call_sites,
 )
 
 from quivers.dsl.ast_nodes import (
@@ -1362,6 +1365,7 @@ class _DeductionElaboration:
         """
         self._deductions: dict[str, _System] = {}
         self._outcome_queries: dict[str, OutcomeQuery] = {}
+        self._outcome_keys: dict[tuple[str, str], OutcomeKey] = {}
         declarations = [
             statement
             for statement in self.source.syntax.statements
@@ -1372,15 +1376,11 @@ class _DeductionElaboration:
         declarations.extend(declaration for declaration, _ in schema_parsers)
         if not declarations:
             return
+        calls = outcome_call_sites(self)
         outcome_calls = {
-            value.args[0].name: value
-            for statement in self.source.syntax.statements
-            if isinstance(statement, ProgramDecl)
-            for step in statement.draws
-            if isinstance(value := getattr(step, "value", None), LetExprCall)
-            and value.func in OUTCOME_CALLS
-            and value.args
-            and isinstance(value.args[0], LetExprVar)
+            call.args[0].name: call
+            for call in calls
+            if isinstance(call.args[0], LetExprVar)
         }
         self._declare_deduction_effects()
         self._program_instance(PARAMS_INSTANCE, "Param")
@@ -1424,6 +1424,7 @@ class _DeductionElaboration:
                 self._declare_chain_family(system)
             self._declare_deduction_instances(system)
             self._deductions[declaration.name] = system
+        self._outcome_keys = declare_outcome_key_types(self, calls)
 
     def _schema_parser_declarations(
         self: _Elaborator,

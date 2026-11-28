@@ -22,7 +22,7 @@ from quivers.qiec.checking import (
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
 from quivers.qiec.families import FAMILIES, DistributionFamily
-from quivers.qiec.foreign import DeductionOutcomes
+from quivers.qiec.foreign import DeductionOutcomeGrouping, DeductionOutcomes
 from quivers.qiec.effects import (
     ComputationType,
     EffectDef,
@@ -616,6 +616,10 @@ def validate_module(module: QiecModule) -> KernelRegistry:
                 from quivers.qiec.deduction_outcomes import validate_outcome_adapter
 
                 validate_outcome_adapter(handler, handler.foreign, registry)
+            elif isinstance(handler.foreign, DeductionOutcomeGrouping):
+                from quivers.qiec.deduction_outcomes import validate_outcome_grouping
+
+                validate_outcome_grouping(handler, handler.foreign, registry)
         _recheck_bodies(module, registry)
         module.__dict__[_RECHECKED] = True
     return registry

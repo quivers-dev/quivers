@@ -524,6 +524,32 @@ counts, plus the cost of constructing and grouping the structural keys.
 Grounding uses the indexed agenda to find the rule instances. The runtime
 grounds the forest again on each invocation.
 
+#### Choosing a typed key
+
+Instead of a string selector, pass the name of a checked computation. For
+instance, `parse_outcomes(D, sentence, classify)` calls `classify` on each
+positive-mass full-span goal. If `classify` has type `D__Item -> K` and an
+empty effect row, the result has family `D__classify__Outcomes`. Its
+constructors are `D__classify__outcome_end` and
+`D__classify__outcome_entry(key, weight, tail)`, where `key : K`.
+
+The key type may be `Bool`, `Int`, `String`, `Unit`, or a closed algebraic
+family without parameters or indices whose fields have these key types.
+Constructor identity and ordered field
+values determine equality, recursively. The query refuses key types whose
+equality it has not established, including `Real`, functions, and indexed
+families. The key computation must terminate on the goals it receives.
+It and the computations it calls may not install effect handlers.
+
+If $g$ is a goal item, the chart has already summed the weights of all its
+proofs into $m(g)$. The mass of a key $k$ is thus
+$\sum_{g:\,\mathrm{classify}(g)=k} m(g)$. Each proof contributes through
+its goal exactly once, and the caller can normalize by $\sum_g m(g)$.
+The query runs the projection once per supported goal, then groups keys
+in a hash table. Its extra work depends on the number of goal items and
+the cost of computing and comparing their keys, even when the proof count
+is much larger. The masses and their normalizer retain their gradients.
+
 #### Scoring a response with a prover
 
 The example computes the tokens of “item reviewed” inside a QVR program. Its lexical rules

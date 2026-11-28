@@ -739,13 +739,38 @@ class DeductionOutcomes(QiecModel):
         return max(ranks.values(), default=0)
 
 
+class DeductionOutcomeGrouping(QiecModel):
+    """Group a typed list of finite log masses by exact structural equality.
+
+    Parameters
+    ----------
+    key_type
+        The checked type of each key. The module verifies that the type
+        admits exact structural equality before the reducer can run.
+    empty, entry
+        The constructors of the typed row list. An entry contains a key,
+        its log mass, and the rest of the list.
+    """
+
+    key_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    empty: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    entry: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["deduction-outcome-grouping"] = "deduction-outcome-grouping"
+
+
 type ForeignSemantics = (
-    SemiringSum | SemiringProduct | Enumeration | Settlement | DeductionOutcomes
+    SemiringSum
+    | SemiringProduct
+    | Enumeration
+    | Settlement
+    | DeductionOutcomes
+    | DeductionOutcomeGrouping
 )
 """What a foreign handler computes."""
 
 
 __all__ = [
+    "DeductionOutcomeGrouping",
     "DeductionOutcomes",
     "EXACT_COUNT",
     "Enumeration",
