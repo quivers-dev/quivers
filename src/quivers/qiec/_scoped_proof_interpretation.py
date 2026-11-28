@@ -81,7 +81,8 @@ def scoped_lookup_computations(
             structural_path=("scoped_lookup", name, str(selected)),
             role="computation",
         )
-        reference = Local(name="reference", type=_at(member, *semantic, ambient))
+        reference_type = _at(member, *semantic, ambient)
+        reference = Local(name="reference", type=reference_type)
         environment = Local(name="environment", type=ambient)
         branches: list[CaseBranch] = []
         cases = (
@@ -100,7 +101,7 @@ def scoped_lookup_computations(
             frame = syntax.frames[passed]
             frame_type = _at(frame, previous_type, carriers[passed])
             (cast,) = refine_branch(
-                member, declaration, reference.type, static_arguments
+                member, declaration, reference_type, static_arguments
             ).givens
             previous = Local(name="previous", type=previous_type)
             hypothesis = Local(name="hypothesis", type=carriers[passed])

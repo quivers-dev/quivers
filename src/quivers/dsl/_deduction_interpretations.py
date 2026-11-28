@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import didactic.api as dx
 
 from quivers.dsl.ast_nodes import QiecInterpretationDecl
+from quivers.dsl._scoped_interpretations import (
+    ScopedSource,
+    lower_scoped_interpretation,
+)
 from quivers.qiec._proof_interpretation import prepare_closed_interpretation
 from quivers.qiec.checking import ComputationSignature, KernelError
 from quivers.qiec.contracts import InterpretationId
@@ -18,7 +23,9 @@ if TYPE_CHECKING:
     from quivers.dsl.qiec_lowering import _Elaborator
 
 
-def declare_interpretations(elaborator: _Elaborator) -> tuple[NamedComputation, ...]:
+def declare_interpretations(
+    elaborator: _Elaborator, scoped: Mapping[str, ScopedSource]
+) -> tuple[NamedComputation, ...]:
     """Register ordinary fold signatures before lowering their callers."""
     generated: list[NamedComputation] = []
     seen: set[str] = set()
@@ -34,9 +41,24 @@ def declare_interpretations(elaborator: _Elaborator) -> tuple[NamedComputation, 
                 f"duplicate computation {declaration.name!r}",
                 code="qiec-interpretation",
             )
-        seen.add(declaration.name)
-        fold = _interpretation(elaborator, declaration)
-        generated.append(fold)
+        source = scoped.get(declaration.deduction)
+        definitions = (
+            (_interpretation(elaborator, declaration),)
+            if source is None
+            else lower_scoped_interpretation(elaborator, declaration, source)
+        )
+        for computation in definitions:
+            if (
+                computation.name in seen
+                or computation.name in elaborator.computation_signatures
+            ):
+                elaborator._fail(
+                    declaration,
+                    f"duplicate computation {computation.name!r}",
+                    code="qiec-interpretation",
+                )
+            seen.add(computation.name)
+            generated.append(computation)
 
     for fold in generated:
         signature = ComputationSignature(
