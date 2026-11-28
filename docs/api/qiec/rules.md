@@ -47,6 +47,14 @@ every derived item, lists every derivation of a goal, and computes an observable
 $\sum_d w(d)\, h(\mathrm{fold}(d))$. It is an oracle for small systems. Its cost is exponential in
 general, and executors are planned from the presentation's analysis instead.
 
+[`closed_derivation_value`][quivers.qiec.rules.closed_derivation_value] makes
+an ordinary QIEC constructor value from a closed derivation of an unconditional
+presentation without proof equations. The value has the proved judgment's
+indexed family type, so a checked computation can take it as an argument. The
+caller retains the derivation's occurrence identities and weights separately.
+For instance, an expectation of a nonlinear proof encoding applies the
+encoding to each proof in the declared support before taking the weighted sum.
+
 ## Analysis
 
 [`analysis`][quivers.qiec.rules.RulePresentation.analysis] holds what a plan needs: sizes, the
