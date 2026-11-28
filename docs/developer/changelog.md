@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Serializable string solver configurations.** The same typed graph can be solved with exact acyclic local decoders for alignment MAP or approximate regular expectation propagation. Solver records preserve their distinct objectives, limits, and reference-language settings.
 - **Checked QIEC composition requests.** A wire record preserves both original sparse operand topologies and their shared weight identities, with explicit lazy or materialized execution.
 - **Authored sparse relation topologies.** QVR declares typed tapes, ordered epsilon and parallel arcs, and shared scalar identities. A checked source score can bind that exact topology and evaluate path entropy or signed expected cost.
 - **Authored string graph scores.** QVR can name a checked graph partition or normalized word objective and call it from an ordinary computation.

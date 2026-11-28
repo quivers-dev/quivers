@@ -128,6 +128,7 @@ from quivers.qiec.relations import (
     RationalRelationSpec,
 )
 from quivers.qiec.string_graphs import StringFactorGraphSpec, TreeStringGraphRequest
+from quivers.qiec.string_solvers import JointAlignmentMapConfig, RegularStringEPConfig
 from quivers.qiec.rules import (
     AxiomOccurrence,
     AxiomSlot,
@@ -355,6 +356,8 @@ _NODE_CLASSES = (
     FixedRelationRequest,
     RationalRelationSpec,
     StringFactorGraphSpec,
+    JointAlignmentMapConfig,
+    RegularStringEPConfig,
     TreeStringGraphRequest,
     # source identity and kinds
     SourceOrigin,
