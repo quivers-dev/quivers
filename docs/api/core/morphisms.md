@@ -274,6 +274,29 @@ of size $r$, each Newton direction takes $O(mr^2+r^3)$ arithmetic
 work. Each line-search trial takes $O(mr)$. Gradients follow the
 accepted sequence of operations.
 
+
+## Finite string belief propagation
+
+A `FiniteStringBeliefPlan` uses an explicit list of admissible words for
+each variable. It compiles the factor scores on their finite supports,
+then reads the live sources once each per run. Construction counts the
+factor entries and the states and candidate arcs of their queries.
+Observed variables retain just their supplied word.
+
+One synchronous sweep forms variable cavities from the previous
+messages, then sums the factor products over every other variable.
+The cavities and outgoing messages are normalized in log space.
+Prefix and suffix products allow the update to handle excluded words
+without subtracting an infinite log value. Damping mixes the old and
+proposed message probabilities.
+
+The result reports the maximum undamped total variation between the
+returned messages and their one-sweep updates. This measures a
+fixed-point residual. The sweep limit can give a result with larger
+residual, and the residual gives no bound on the posterior error of
+a loopy graph. A fixed sweep count is available for differentiating a
+declared schedule.
+
 ::: quivers.core.relations
     options:
       members:
@@ -291,12 +314,14 @@ accepted sequence of operations.
         - ConditionalStringQuery
         - QueryWork
         - FiniteRelationRestriction
+        - FiniteStringBeliefPlan
         - FiniteStringScore
         - NgramFamily
         - NgramProjection
         - ProductiveEpsilonCycleError
         - RelationLimitError
         - RelationPath
+        - StringBeliefResult
         - StringFactor
         - StringFactorGraph
         - StringMapCertificate
