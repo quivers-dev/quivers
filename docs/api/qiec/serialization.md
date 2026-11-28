@@ -861,6 +861,51 @@ foreign calls to be discharged report the exact missing handler.
 
 ::: quivers.qiec.alignment_map_runtime.JointAlignmentMapRuntimeProvider
 
+### Checked paired alignment MAP
+
+`PairedAlignmentMapRequest` binds the same authored graph to its
+portable `JointAlignmentMapDecomposition`. The checked foreign
+identity includes the ordered factor groups, all exact solver
+settings, and both output capacities. Each pair shares exactly one
+nominal tape variable. The portable solver verifies its exact
+local witnesses and expands its feasible paths into original
+occurrences before the runtime formats the evidence.
+
+The first nine fields are the ordinary MAP report. Four more fields
+describe the paired run. Let $F$ be the original factor count, $P$
+the allocated original arc positions per trace, and $G$ the
+number of groups.
+
+| Field | QVR carrier |
+| --- | --- |
+| Original start state, final state, and length per factor | `Tensor[Int]([F, 3])` |
+| Original ordered arc occurrence IDs with `-1` padding | `Tensor[Int]([F, P])` |
+| Exact original trace scores as signed hexadecimal rational pairs | `Tensor[String]([F, 2])` |
+| Actual product states and arcs per group | `Tensor[Int]([G, 2])` |
+
+Trace rows follow original factor order. Each trace's word tuple is
+given by the common assignment at that factor's ordered variable
+scope. A feasible limit or gap result can include these traces.
+A genuine empty trace retains its two boundaries and length zero.
+Absent traces use `-1` integer fields and empty rational pairs.
+Group rows follow the declared decomposition order, with
+`(-1, -1)` for singleton groups. Product sizes can be available
+on a completed solve with no feasible assignment.
+
+The assignment and length arrays preflight $V(K+1)$ cells as above.
+The extra integer arrays preflight $F(P+3)+2G$ cells. The runtime
+checks ordinal ranges, actual lengths, and the declared score bit
+limits before encoding the report. A representational limit
+returns absent evidence and the available measured search counts.
+The solver's own pair construction and decoder budgets have a
+`resource_limit` outcome. The common certification flags retain
+their exact local and objective-gap meanings. A checked target
+without the paired handler reports that missing capability.
+
+::: quivers.qiec.paired_alignment_map_runtime.PairedAlignmentMapRequest
+
+::: quivers.qiec.paired_alignment_map_runtime.PairedAlignmentMapRuntimeProvider
+
 ::: quivers.qiec.string_solvers.RegularStringEPConfig
 
 ::: quivers.qiec.string_solvers.RegularStringEPPolicy

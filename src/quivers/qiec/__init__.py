@@ -544,6 +544,10 @@ from quivers.qiec.alignment_map_runtime import (
     JointAlignmentMapRequest,
     JointAlignmentMapRuntimeProvider,
 )
+from quivers.qiec.paired_alignment_map_runtime import (
+    PairedAlignmentMapRequest,
+    PairedAlignmentMapRuntimeProvider,
+)
 from quivers.qiec.finite_ep_runtime import (
     FiniteStringEPRequest,
     FiniteStringEPRuntimeProvider,
@@ -982,6 +986,8 @@ __all__ = [
     "RationalRelationSpec",
     "StringFactorGraphSpec",
     "JointAlignmentMapRequest",
+    "PairedAlignmentMapRequest",
+    "PairedAlignmentMapRuntimeProvider",
     "JointAlignmentMapRuntimeProvider",
     "JointAlignmentMapConfig",
     "JointAlignmentMapDecomposition",

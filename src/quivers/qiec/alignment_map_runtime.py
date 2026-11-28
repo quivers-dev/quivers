@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from hashlib import sha256
 from typing import Literal
@@ -99,11 +100,9 @@ class JointAlignmentMapRequest(QiecModel):
             raise ValueError(
                 "alignment MAP report limits must be nonnegative Int values"
             )
-        cells = len(self.graph.variables) * (self.word_capacity + 1)
-        if cells > self.max_assignment_cells:
-            raise ValueError("alignment MAP report exceeds max_assignment_cells")
-        if cells > _INT_MAX // _INT_BYTES:
-            raise ValueError("alignment MAP assignment storage exceeds the Int range")
+        _validate_assignment_shape(
+            len(self.graph.variables), self.word_capacity, self.max_assignment_cells
+        )
 
     @property
     def objective(self) -> Literal["joint_alignment_map"]:
@@ -140,81 +139,137 @@ class JointAlignmentMapRequest(QiecModel):
             Status, diagnostic, assignment presence, padded symbols, lengths,
             rational rows, agreement and gap flags, and five work counts.
         """
-        variables = IndexLiteral(value=len(self.graph.variables), sort=NAT)
-        capacity = IndexLiteral(value=self.word_capacity, sort=NAT)
-        four = IndexLiteral(value=4, sort=NAT)
-        pair = IndexLiteral(value=2, sort=NAT)
-        five = IndexLiteral(value=5, sort=NAT)
         return product_type(
-            STRING,
-            STRING,
-            BOOL,
-            tensor_type(INT, (variables, capacity)),
-            tensor_type(INT, (variables,)),
-            tensor_type(STRING, (four, pair)),
-            BOOL,
-            BOOL,
-            tensor_type(INT, (five,)),
+            *_map_report_fields(len(self.graph.variables), self.word_capacity)
         )
 
 
-class JointAlignmentMapRuntimeProvider:
-    """Run the declared exact joint MAP solver through ordinary native QVR.
-
-    Each invocation uses the original live parameter identities. The
-    portable solver verifies its witnesses before the report is encoded.
-    The report contains discrete words and exact rational evidence.
+def _validate_assignment_shape(
+    variable_count: int, word_capacity: int, max_assignment_cells: int
+) -> None:
+    """Check the fixed native assignment and length tensor extents.
 
     Parameters
     ----------
-    request : JointAlignmentMapRequest
-        The checked authored graph, solver and report bounds.
-    parameters : Mapping of ParameterId to torch.Tensor
-        Original live LogProb scalar weights used by the graph.
-    """
+    variable_count : int
+        The number of declared variables.
+    word_capacity : int
+        The number of token positions per row.
+    max_assignment_cells : int
+        The combined limit on symbol rows and length entries.
 
-    name = "joint-alignment-map"
+    Raises
+    ------
+    ValueError
+        The combined allocation exceeds the declared or runtime range.
+    """
+    cells = variable_count * (word_capacity + 1)
+    if cells > max_assignment_cells:
+        raise ValueError("alignment MAP report exceeds max_assignment_cells")
+    if cells > _INT_MAX // _INT_BYTES:
+        raise ValueError("alignment MAP assignment storage exceeds the Int range")
+
+
+def _map_report_fields(variable_count: int, word_capacity: int) -> tuple[TypeExpr, ...]:
+    """Construct the ordered fields of the common checked MAP report.
+
+    Parameters
+    ----------
+    variable_count : int
+        The number of declared variables.
+    word_capacity : int
+        The number of allocated token positions per variable.
+
+    Returns
+    -------
+    tuple of TypeExpr
+        The exact status, assignment, rational evidence and work carrier.
+    """
+    variables = IndexLiteral(value=variable_count, sort=NAT)
+    capacity = IndexLiteral(value=word_capacity, sort=NAT)
+    four = IndexLiteral(value=4, sort=NAT)
+    pair = IndexLiteral(value=2, sort=NAT)
+    five = IndexLiteral(value=5, sort=NAT)
+    return (
+        STRING,
+        STRING,
+        BOOL,
+        tensor_type(INT, (variables, capacity)),
+        tensor_type(INT, (variables,)),
+        tensor_type(STRING, (four, pair)),
+        BOOL,
+        BOOL,
+        tensor_type(INT, (five,)),
+    )
+
+
+def _report_work(result: StringAlignmentMapResult) -> _Work:
+    """Extract the five measured common MAP counters.
+
+    Parameters
+    ----------
+    result : StringAlignmentMapResult
+        The exact verified search result.
+
+    Returns
+    -------
+    tuple of int
+        Iterations, local states and work, and verification states and work.
+    """
+    return (
+        result.iterations,
+        result.max_local_states,
+        result.local_arc_examinations,
+        result.max_verification_states,
+        result.verification_arc_examinations,
+    )
+
+
+class _MapReportRuntime(ABC):
+    """Share verified search encoding and attachment across exact MAP reports.
+
+    Parameters
+    ----------
+    graph : StringFactorGraphSpec
+        The checked factor model and variable declaration order.
+    word_capacity, max_ratio_bits : int
+        Preflighted assignment shape and the declared ratio encoding limit.
+    handler_name : str
+        The exact nominal foreign declaration.
+    result_type : TypeExpr
+        The native report's checked result carrier.
+    """
 
     def __init__(
         self,
-        request: JointAlignmentMapRequest,
-        parameters: Mapping[ParameterId, torch.Tensor],
+        graph: StringFactorGraphSpec,
+        word_capacity: int,
+        max_ratio_bits: int,
+        handler_name: str,
+        result_type: TypeExpr,
     ) -> None:
-        self._request = request
-        self._parameters = parameters
-        self._variables = tuple(name for name, _, _, _ in request.graph.variables)
-        self._handler_name = request.handler_name
-        self._result_type = request.result_type
+        self._variables = tuple(name for name, _, _, _ in graph.variables)
+        self._word_capacity = word_capacity
+        self._max_ratio_bits = max_ratio_bits
+        self._handler_name = handler_name
+        self._result_type = result_type
 
-    def _evaluate(self, argument: object, _context: ClauseContext) -> _Report:
-        """Run the same exact solver and independently checked bound as the host.
+    @abstractmethod
+    def _evaluate(self, argument: object, _context: ClauseContext) -> object:
+        """Evaluate one checked native report.
 
         Parameters
         ----------
         argument : object
-            The Unit argument to Compute.
+            The Unit argument.
         _context : ClauseContext
-            The active clause context.
+            The native machine context.
 
         Returns
         -------
-        tuple
-            The typed report or a resource refusal.
-
-        Raises
-        ------
-        TypeError
-            The argument is outside Unit.
+        object
+            A value in this report's exact checked carrier.
         """
-        if argument is not None:
-            raise TypeError("an alignment MAP report takes a unit argument")
-        request = self._request
-        try:
-            with torch.no_grad():
-                result = request.solver.solve(request.graph, self._parameters)
-        except RelationLimitError as error:
-            return self._unavailable("resource_limit", str(error))
-        return self._report(result)
 
     def _report(self, result: StringAlignmentMapResult) -> _Report:
         """Preflight and pack a verified solve result without narrowing its scores.
@@ -234,14 +289,7 @@ class JointAlignmentMapRuntimeProvider:
         ArithmeticError
             The solver's status, assignment, or verified evidence is inconsistent.
         """
-        request = self._request
-        work = (
-            result.iterations,
-            result.max_local_states,
-            result.local_arc_examinations,
-            result.max_verification_states,
-            result.verification_arc_examinations,
-        )
+        work = _report_work(result)
         if any(type(value) is not int or not 0 <= value <= _INT_MAX for value in work):
             return self._unavailable(
                 "report_limit", "alignment MAP work counts exceed Int"
@@ -265,7 +313,7 @@ class JointAlignmentMapRuntimeProvider:
                     "alignment MAP assignment differs from graph variables"
                 )
             words = tuple(by_name[name] for name in self._variables)
-            if any(len(word) > request.word_capacity for word in words):
+            if any(len(word) > self._word_capacity for word in words):
                 return self._unavailable(
                     "report_limit", "alignment MAP word exceeds word_capacity", work
                 )
@@ -284,7 +332,7 @@ class JointAlignmentMapRuntimeProvider:
             for value in (lower, upper, absolute, relative)
             if value is not None
         )
-        if bits > request.max_ratio_bits:
+        if bits > self._max_ratio_bits:
             return self._unavailable(
                 "report_limit", "alignment MAP evidence exceeds max_ratio_bits", work
             )
@@ -318,7 +366,7 @@ class JointAlignmentMapRuntimeProvider:
             Padded integer rows and exact lengths. Absent lengths are -1.
         """
         count = len(self._variables)
-        padded = torch.full((count, self._request.word_capacity), -1, dtype=torch.int64)
+        padded = torch.full((count, self._word_capacity), -1, dtype=torch.int64)
         lengths = padded.new_full((count,), -1)
         for index, word in enumerate(words):
             lengths[index] = len(word)
@@ -403,6 +451,69 @@ class JointAlignmentMapRuntimeProvider:
         if type_ != self._result_type:
             return None
         return CoreRuntimeProvider().validator_for(type_)
+
+
+class JointAlignmentMapRuntimeProvider(_MapReportRuntime):
+    """Run the declared exact joint MAP solver through ordinary native QVR.
+
+    Each invocation uses the original live parameter identities. The
+    portable solver verifies its witnesses before the report is encoded.
+    The report contains discrete words and exact rational evidence.
+
+    Parameters
+    ----------
+    request : JointAlignmentMapRequest
+        The checked authored graph, solver and report bounds.
+    parameters : Mapping of ParameterId to torch.Tensor
+        Original live LogProb scalar weights used by the graph.
+    """
+
+    name = "joint-alignment-map"
+
+    def __init__(
+        self,
+        request: JointAlignmentMapRequest,
+        parameters: Mapping[ParameterId, torch.Tensor],
+    ) -> None:
+        super().__init__(
+            request.graph,
+            request.word_capacity,
+            request.max_ratio_bits,
+            request.handler_name,
+            request.result_type,
+        )
+        self._request = request
+        self._parameters = parameters
+
+    def _evaluate(self, argument: object, _context: ClauseContext) -> _Report:
+        """Run the same exact solver and independently checked bound as the host.
+
+        Parameters
+        ----------
+        argument : object
+            The Unit argument to Compute.
+        _context : ClauseContext
+            The active clause context.
+
+        Returns
+        -------
+        tuple
+            The typed report or a resource refusal.
+
+        Raises
+        ------
+        TypeError
+            The argument is outside Unit.
+        """
+        if argument is not None:
+            raise TypeError("an alignment MAP report takes a unit argument")
+        request = self._request
+        try:
+            with torch.no_grad():
+                result = request.solver.solve(request.graph, self._parameters)
+        except RelationLimitError as error:
+            return self._unavailable("resource_limit", str(error))
+        return self._report(result)
 
 
 __all__ = ["JointAlignmentMapRequest", "JointAlignmentMapRuntimeProvider"]

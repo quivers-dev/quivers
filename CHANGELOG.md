@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **A tail outcome for capped cyclic paths.** Checked QVR can draw or score the normalized law that retains short original traces and groups every longer walk into one tagged tail.
 - **Checked finite-unrolled string EP.** A fixed native unigram schedule can return live differentiable word scores with warm sites, local trial counts, and explicit construction limits.
 - **Checked joint alignment MAP.** A named QVR computation can return padded words, exact rational primal and dual evidence, and the verified agreement or gap status on its authored string graph.
+- **Checked paired alignment MAP.** A named QVR report returns verified paired results, original factor traces with exact scores, and the constructed product sizes in group order.
 - **Checked Markov path certificate reports.** Native QVR can request a value-only forward-error certificate with exact rational evidence or a typed unavailable outcome.
 - **Certified Markov path accuracy.** A bounded fixed-word query can establish an exact absolute or relative forward-error bound for its float64 score, using rational sparse verification and the existing local closure.
 - **Checked deduction guards.** QVR rules can use a pure Boolean guard over matched natural coordinates. Checked search and eligible indexed item outcomes evaluate the guard before accepting a grounded rule.
