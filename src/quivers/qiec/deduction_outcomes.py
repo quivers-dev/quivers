@@ -13,6 +13,7 @@ from quivers.core.algebras import LOG_PROB
 from quivers.qiec.canonical import tensor_type
 from quivers.qiec.checking import KernelError, KernelRegistry
 from quivers.qiec.contracts import OccurrenceId, ParameterId
+from quivers.qiec.declarations import FamilyDecl
 from quivers.qiec.effects import HandlerDef
 from quivers.qiec.evaluator import (
     ClauseContext,
@@ -29,11 +30,19 @@ from quivers.qiec.foreign import (
     DEDUCTION_OUTCOME_KEYS,
     DeductionOutcomeGrouping,
     DeductionOutcomes,
+    DeductionProofs,
 )
 from quivers.qiec.identifiers import ConstructorId, OperationId
 from quivers.qiec.kinds import NAT, IndexBinder, UserIndexSort
-from quivers.qiec.numbers import NumberDomain, decide, discrete_key
-from quivers.qiec.rules import AxiomOccurrence, Ground, RulePresentation
+from quivers.qiec.numbers import NumberDomain, decide, discrete_key, host_index
+from quivers.qiec.rules import (
+    AxiomOccurrence,
+    Ground,
+    Item,
+    RulePresentation,
+    closed_derivation_value,
+)
+from quivers.qiec.terms import Return
 from quivers.qiec.types import (
     BOOL,
     INT,
@@ -47,13 +56,53 @@ from quivers.qiec.types import (
     TypeExpr,
     render_static,
 )
-from quivers.stochastic.forest import build_forest, edge_weight, forest_folds
+from quivers.stochastic.forest import (
+    DerivationForest,
+    ForestRefused,
+    _weights_only,
+    build_forest,
+    edge_weight,
+    fold_derivations_many,
+    forest_folds,
+)
+
+
+def proof_entry_type(
+    family: FamilyDecl,
+) -> tuple[tuple[IndexBinder, ...], TypeApplication]:
+    """Bind a proof's indices existentially in an unindexed result row.
+
+    Parameters
+    ----------
+    family
+        The exported lexical proof family.
+
+    Returns
+    -------
+    tuple
+        The row's constructor binders and its field type at those binders.
+    """
+    indices = tuple(
+        binder.with_(refinable=False)
+        for binder in family.indices
+        if isinstance(binder, IndexBinder)
+    )
+    assert len(indices) == len(family.indices) and not family.parameters
+    proof = TypeApplication(
+        constructor=family.type_constructor,
+        arguments=tuple(
+            IndexVariable(name=binder.name, sort=binder.sort) for binder in indices
+        ),
+    )
+    return indices, proof
 
 
 def validate_outcome_adapter(
-    definition: HandlerDef, semantics: DeductionOutcomes, registry: KernelRegistry
+    definition: HandlerDef,
+    semantics: DeductionOutcomes | DeductionProofs,
+    registry: KernelRegistry,
 ) -> None:
-    """Check how a private span presentation exchanges typed values with QIEC.
+    """Check how a lexical span presentation exchanges typed values with QIEC.
 
     Parameters
     ----------
@@ -70,12 +119,27 @@ def validate_outcome_adapter(
         If a type or constructor disagrees with the presented vocabulary
         or the operation cannot carry the query's inputs and answer.
     """
-    presentation = semantics.presentation
+    lexical = semantics.chart if isinstance(semantics, DeductionProofs) else semantics
+    presentation = lexical.presentation
     assert isinstance(presentation, RulePresentation)
     (form,) = presentation.judgments
+    result_binders: tuple[IndexBinder, ...] = ()
+    key_type = lexical.item_type
+    control = STRING
+    if isinstance(semantics, DeductionProofs):
+        (family,), constructors = semantics.proof_presentation.declarations()
+        if registry.families.get(family.id) != family or any(
+            registry.constructors.get(constructor.id) != constructor
+            for constructor in constructors
+        ):
+            raise KernelError(
+                "deduction proof adapter must expose its checked proof declarations"
+            )
+        result_binders, key_type = proof_entry_type(family)
+        control = INT
     output = definition.output_type
-    empty = registry.constructors.get(semantics.empty)
-    entry = registry.constructors.get(semantics.entry)
+    empty = registry.constructors.get(lexical.empty)
+    entry = registry.constructors.get(lexical.entry)
     if (
         empty is None
         or entry is None
@@ -88,37 +152,36 @@ def validate_outcome_adapter(
         or empty.family != entry.family
         or empty.fields
         or empty.telescope
-        or entry.telescope
-        or tuple(field.type for field in entry.fields)
-        != (semantics.item_type, REAL, output)
+        or entry.telescope != result_binders
+        or tuple(field.type for field in entry.fields) != (key_type, REAL, output)
     ):
         raise KernelError("deduction outcome adapter has an invalid result family")
-    constructor_ids = dict(semantics.item_constructors)
-    item_prefix = semantics.item_type.constructor.name.removesuffix("__Item")
+    constructor_ids = dict(lexical.item_constructors)
+    item_prefix = lexical.item_type.constructor.name.removesuffix("__Item")
     for name, identity in constructor_ids.items():
         constructor = registry.constructors.get(identity)
         if (
             constructor is None
             or constructor.name != f"{item_prefix}__{name}"
             or constructor.telescope
-            or semantics.item_type
+            or lexical.item_type
             != TypeApplication(
                 constructor=registry.families[constructor.family].type_constructor,
                 arguments=(),
             )
             or any(
-                field.type not in (semantics.item_type, INT)
+                field.type not in (lexical.item_type, INT)
                 for field in constructor.fields
             )
         ):
             raise KernelError(
                 "deduction outcome adapter has an invalid item constructor"
             )
-    span_fields = registry.constructors[constructor_ids[semantics.span]].fields
+    span_fields = registry.constructors[constructor_ids[lexical.span]].fields
     if tuple(field.type for field in span_fields) != (
         INT,
         INT,
-        *((semantics.item_type,) * (len(form.indices) - 2)),
+        *((lexical.item_type,) * (len(form.indices) - 2)),
     ):
         raise KernelError(
             "deduction outcome adapter does not preserve the span arguments"
@@ -144,7 +207,7 @@ def validate_outcome_adapter(
         identity = constructor_ids.get(label)
         if identity is None or tuple(
             field.type for field in registry.constructors[identity].fields
-        ) != ((semantics.item_type,) * arity):
+        ) != ((lexical.item_type,) * arity):
             raise KernelError(
                 f"deduction outcome adapter does not preserve {label!r} at arity {arity}"
             )
@@ -160,16 +223,16 @@ def validate_outcome_adapter(
         raise KernelError("deduction outcome adapter needs a Nat sentence extent")
     extent = IndexVariable(name=binder.name, sort=binder.sort)
     term_count = IndexLiteral(
-        value=len(semantics.words) * (len(form.indices) - 2), sort=NAT
+        value=len(lexical.words) * (len(form.indices) - 2), sort=NAT
     )
     weight_count = IndexLiteral(
-        value=len(semantics.words) + len(semantics.parameters), sort=NAT
+        value=len(lexical.words) + len(lexical.parameters), sort=NAT
     )
     expected = (
         tensor_type(STRING, (extent,)),
-        tensor_type(semantics.item_type, (term_count,)),
+        tensor_type(lexical.item_type, (term_count,)),
         tensor_type(REAL, (weight_count,)),
-        STRING,
+        control,
         BOOL,
     )
     if (
@@ -362,42 +425,36 @@ def _item(
     )
 
 
-def _chart_outcomes(
+def _lexical_forest(
     semantics: DeductionOutcomes,
     tokens: Sequence[object],
     terms: Sequence[object],
     weights: torch.Tensor,
-    key: str,
-    normalize: bool,
-) -> dict[Ground, torch.Tensor]:
-    """Push full-span goal weights forward to the selected structural keys.
+) -> tuple[
+    DerivationForest, dict[ParameterId | OccurrenceId, torch.Tensor], tuple[Item, ...]
+]:
+    """Ground shared lexical proof and outcome queries once.
 
     Parameters
     ----------
     semantics
-        The descriptor of the lexical presentation and its admissible weights.
-    tokens
-        The input sentence, as a sequence of strings.
-    terms
-        The category and optional logical form of every lexical entry.
+        The finite span presentation and its ordered weight addresses.
+    tokens, terms
+        The input sentence and lexical entries' category or form values.
     weights
-        The log weights of the lexical entries followed by the rule weights.
-    key
-        The projection requested for the keys of the result.
-    normalize
-        Whether to subtract the log total mass from each returned log weight.
+        Lexical log weights followed by rule log weights.
 
     Returns
     -------
-    dict of Ground to torch.Tensor
-        The log mass of each positive-mass key, with gradients.
+    tuple
+        The packed forest, differentiable weights, and accepted full spans.
 
     Raises
     ------
     InvalidHandlerError
-        If the request does not match the descriptor's admitted fragment.
+        If the words or lexical values disagree with the typed presentation.
     EvaluationError
-        If a finite mass is out of range or normalization has no positive mass.
+        If the supplied log values exceed the finite arithmetic range.
     """
     presentation = semantics.presentation
     assert isinstance(presentation, RulePresentation)
@@ -409,8 +466,6 @@ def _chart_outcomes(
         if isinstance(binder.sort, UserIndexSort)
     )
     arity = len(sorts)
-    if key not in DEDUCTION_OUTCOME_KEYS or (key == "form" and arity != 2):
-        raise InvalidHandlerError(f"unavailable deduction outcome key {key!r}")
     if len(terms) != len(semantics.words) * arity:
         raise InvalidHandlerError("deduction outcome lexical terms have the wrong size")
     if weights.shape != (len(semantics.words) + len(semantics.parameters),):
@@ -465,6 +520,52 @@ def _chart_outcomes(
         if item.arguments[:2] == (0, len(tokens))
         and (semantics.start is None or item.arguments[2] == semantics.start)
     )
+    return forest, inputs, goals
+
+
+def _chart_outcomes(
+    semantics: DeductionOutcomes,
+    tokens: Sequence[object],
+    terms: Sequence[object],
+    weights: torch.Tensor,
+    key: str,
+    normalize: bool,
+) -> dict[Ground, torch.Tensor]:
+    """Push full-span goal weights forward to the selected structural keys.
+
+    Parameters
+    ----------
+    semantics
+        The descriptor of the lexical presentation and its admissible weights.
+    tokens
+        The input sentence, as a sequence of strings.
+    terms
+        The category and optional logical form of every lexical entry.
+    weights
+        The log weights of the lexical entries followed by the rule weights.
+    key
+        The projection requested for the keys of the result.
+    normalize
+        Whether to subtract the log total mass from each returned log weight.
+
+    Returns
+    -------
+    dict of Ground to torch.Tensor
+        The log mass of each positive-mass key, with gradients.
+
+    Raises
+    ------
+    InvalidHandlerError
+        If the request does not match the descriptor's admitted fragment.
+    EvaluationError
+        If a finite mass is out of range or normalization has no positive mass.
+    """
+    presentation = semantics.presentation
+    assert isinstance(presentation, RulePresentation)
+    (span,) = presentation.judgments
+    if key not in DEDUCTION_OUTCOME_KEYS or (key == "form" and len(span.indices) != 4):
+        raise InvalidHandlerError(f"unavailable deduction outcome key {key!r}")
+    forest, inputs, goals = _lexical_forest(semantics, tokens, terms, weights)
     values = forest_folds(
         forest,
         goals,
@@ -778,6 +879,116 @@ def deduction_outcomes_handler(
                 ),
             )
         )
+
+    return RuntimeHandler(
+        definition=definition,
+        clauses={
+            operation: RuntimeClause(
+                invoke=query,
+                result_validator=lambda result: (
+                    isinstance(result, RuntimeConstructor)
+                    and result.result_type == definition.output_type
+                ),
+            )
+        },
+        duplicable_context=True,
+    )
+
+
+def deduction_proofs_handler(
+    definition: HandlerDef, operation: OperationId, semantics: DeductionProofs
+) -> RuntimeHandler:
+    """Provide a finite lexical proof list with existentially indexed rows.
+
+    Parameters
+    ----------
+    definition, operation
+        The checked handler and its single linear operation.
+    semantics
+        The checked span grammar and proof row constructors.
+
+    Returns
+    -------
+    RuntimeHandler
+        The handler running one packed proof enumeration for the query.
+    """
+
+    def query(
+        request: RuntimeRequest, _resume: Resumption, context: ClauseContext
+    ) -> TailResume:
+        """Build typed values only after verifying the global proof limit.
+
+        Parameters
+        ----------
+        request
+            Sentence, lexical values, weights, proof limit, and normalization.
+        _resume
+            The continuation resumed by the returned directive.
+        context
+            The evaluator and number domain for reifying checked proof values.
+
+        Returns
+        -------
+        TailResume
+            The list of supported proofs and their differentiable weights.
+
+        Raises
+        ------
+        InvalidHandlerError
+            If the operation arguments have the wrong runtime representation.
+        EvaluationError
+            If the budget is nonpositive or exceeded, or normalization fails.
+        """
+        tokens, terms, weights, budget, normalize = request.arguments
+        if not (
+            isinstance(tokens, tuple)
+            and isinstance(terms, tuple)
+            and isinstance(weights, torch.Tensor)
+        ):
+            raise InvalidHandlerError("malformed deduction proof query")
+        limit = host_index(budget, "deduction proof budget")
+        if limit < 1:
+            raise EvaluationError("deduction proof budgets must be positive")
+        forest, inputs, goals = _lexical_forest(semantics.chart, tokens, terms, weights)
+        try:
+            by_goal = fold_derivations_many(
+                forest,
+                goals,
+                LOG_PROB,
+                inputs,
+                _weights_only(forest),
+                limit=limit,
+                like=weights,
+            )
+        except ForestRefused as error:
+            raise EvaluationError(str(error)) from error
+        listed = tuple(
+            (proof, weight) for rows in by_goal.values() for proof, weight, _ in rows
+        )
+        masses = _outcome_masses(
+            {index: [mass] for index, (_, mass) in enumerate(listed)},
+            decide(normalize, "proof normalization"),
+        )
+        result = RuntimeConstructor(
+            constructor=semantics.chart.empty,
+            static_arguments=(),
+            fields=(),
+            result_type=definition.output_type,
+        )
+        for index, weight in reversed(tuple(masses.items())):
+            proof = closed_derivation_value(
+                semantics.proof_presentation, listed[index][0]
+            )
+            value = context.evaluate(Return(value=proof))
+            assert isinstance(value, RuntimeConstructor)
+            assert isinstance(proof.result_type, TypeApplication)
+            result = RuntimeConstructor(
+                constructor=semantics.chart.entry,
+                static_arguments=proof.result_type.arguments,
+                fields=(value, weight, result),
+                result_type=definition.output_type,
+            )
+        return TailResume(value=result)
 
     return RuntimeHandler(
         definition=definition,
