@@ -10,11 +10,11 @@ import torch
 from quivers._positions import demand
 from quivers._values import HeldValue
 from quivers.core.algebras import LOG_PROB
-from quivers.qiec.canonical import tensor_type
+from quivers.qiec.canonical import sampleable_type, tensor_type
 from quivers.qiec.checking import KernelError, KernelRegistry
 from quivers.qiec.contracts import OccurrenceId, ParameterId
 from quivers.qiec.declarations import FamilyDecl
-from quivers.qiec.effects import HandlerDef
+from quivers.qiec.effects import HandlerDef, ResumptionGrade
 from quivers.qiec.evaluator import (
     ClauseContext,
     EvaluationError,
@@ -29,6 +29,7 @@ from quivers.qiec.evaluator import (
 from quivers.qiec.foreign import (
     DEDUCTION_OUTCOME_KEYS,
     DeductionOutcomeGrouping,
+    DeductionOutcomeLaw,
     DeductionOutcomes,
     DeductionProofs,
 )
@@ -311,15 +312,48 @@ def validate_outcome_grouping(
     KernelError
         The key type, row family, or grouping operation has an invalid signature.
     """
-    validate_outcome_key(grouping.key_type, registry)
     output = definition.output_type
+    if definition.telescope or definition.input_type != output:
+        raise KernelError("deduction outcome grouping has an invalid result family")
+    _validate_outcome_row_family(output, grouping, registry)
+    effect = registry.effects[definition.effect.id]
+    if len(effect.operations) != 1 or len(definition.clauses) != 1:
+        raise KernelError("deduction outcome grouping needs one operation")
+    (operation,) = effect.operations
+    if (
+        effect.telescope
+        or operation.telescope
+        or tuple(argument.type for argument in operation.arguments) != (output, BOOL)
+        or operation.result_type != output
+    ):
+        raise KernelError("deduction outcome grouping has an invalid query signature")
+
+
+def _validate_outcome_row_family(
+    output: TypeExpr, grouping: DeductionOutcomeGrouping, registry: KernelRegistry
+) -> None:
+    """Check the nominal closed row family before consuming its values.
+
+    Parameters
+    ----------
+    output
+        The nominal type of the weighted row list.
+    grouping
+        The expected key type and constructor identities.
+    registry
+        Constructor and family declarations for those identities.
+
+    Raises
+    ------
+    KernelError
+        The row family or the key type is invalid.
+    """
+    validate_outcome_key(grouping.key_type, registry)
     empty = registry.constructors.get(grouping.empty)
     entry = registry.constructors.get(grouping.entry)
     if (
         empty is None
         or entry is None
-        or definition.telescope
-        or definition.input_type != output
         or empty.family != entry.family
         or empty.fields
         or empty.telescope
@@ -337,17 +371,44 @@ def validate_outcome_grouping(
         or output != TypeApplication(constructor=family.type_constructor, arguments=())
     ):
         raise KernelError("deduction outcome grouping has an invalid result family")
+
+
+def validate_outcome_law(
+    definition: HandlerDef, law: DeductionOutcomeLaw, registry: KernelRegistry
+) -> None:
+    """Check the row and result types of a finite outcome law handler.
+
+    Parameters
+    ----------
+    definition
+        The handler declaration for the conversion operation.
+    law
+        The exact nominal layout of the weighted input rows.
+    registry
+        The checked effect and type declarations.
+
+    Raises
+    ------
+    KernelError
+        The handler does not implement the declared finite sampleable conversion.
+    """
     effect = registry.effects[definition.effect.id]
     if len(effect.operations) != 1 or len(definition.clauses) != 1:
-        raise KernelError("deduction outcome grouping needs one operation")
+        raise KernelError("deduction outcome law needs one operation")
     (operation,) = effect.operations
+    output = sampleable_type(law.layout.key_type)
     if (
         effect.telescope
         or operation.telescope
-        or tuple(argument.type for argument in operation.arguments) != (output, BOOL)
+        or definition.telescope
+        or len(operation.arguments) != 1
+        or definition.clauses[0].grade is not ResumptionGrade.LINEAR
         or operation.result_type != output
+        or definition.input_type != output
+        or definition.output_type != output
     ):
-        raise KernelError("deduction outcome grouping has an invalid query signature")
+        raise KernelError("deduction outcome law has an invalid query signature")
+    _validate_outcome_row_family(operation.arguments[0].type, law.layout, registry)
 
 
 def _ground(
@@ -797,6 +858,122 @@ def outcome_grouping_handler(
                 result_validator=lambda result: (
                     isinstance(result, RuntimeConstructor)
                     and result.result_type == definition.output_type
+                ),
+            )
+        },
+        duplicable_context=True,
+    )
+
+
+def outcome_law_handler(
+    definition: HandlerDef,
+    operation: OperationId,
+    law: DeductionOutcomeLaw,
+    registry: KernelRegistry,
+) -> RuntimeHandler:
+    """Bind a checked finite law to the live masses in a weighted outcome table.
+
+    Parameters
+    ----------
+    definition
+        The checked law-conversion handler.
+    operation
+        Its one linear conversion operation.
+    law
+        The declared input row layout and output carrier.
+    registry
+        The nominal constructor and effect declarations for this invocation.
+
+    Returns
+    -------
+    RuntimeHandler
+        The pure conversion implementation. Random consumes its result separately.
+    """
+    from didactic.api import ValidationError
+
+    from quivers.qiec.distributions import DistributionError
+    from quivers.qiec.structured_sampleables import FiniteSampleable
+
+    layout = law.layout
+    (conversion,) = registry.effects[definition.effect.id].operations
+    row_type = conversion.arguments[0].type
+
+    def convert(
+        request: RuntimeRequest, _resume: Resumption, _context: ClauseContext
+    ) -> TailResume:
+        """Read the finite rows and resume with their normalized law.
+
+        Parameters
+        ----------
+        request
+            The single argument is the checked weighted row list.
+        _resume
+            The machine's continuation, used through the returned tail directive.
+        _context
+            The invocation context for this pure conversion.
+
+        Returns
+        -------
+        TailResume
+            A probabilistic value over the original outcome keys.
+
+        Raises
+        ------
+        InvalidHandlerError
+            If rows are malformed or there is no positive total mass.
+        """
+        (row,) = request.arguments
+        values: list[HeldValue] = []
+        weights: list[torch.Tensor] = []
+        seen: set[int] = set()
+        while (
+            isinstance(row, RuntimeConstructor)
+            and row.result_type == row_type
+            and not row.static_arguments
+            and id(row) not in seen
+        ):
+            seen.add(id(row))
+            if row.constructor == layout.empty and not row.fields:
+                if not weights:
+                    raise InvalidHandlerError(
+                        "deduction outcomes have no positive mass"
+                    )
+                try:
+                    result = FiniteSampleable(
+                        element=layout.key_type,
+                        values=tuple(values),
+                        log_weights=torch.stack(weights),
+                        registry=registry,
+                    )
+                except (DistributionError, ValidationError) as error:
+                    raise InvalidHandlerError(str(error)) from error
+                return TailResume(value=result)
+            if row.constructor != layout.entry or len(row.fields) != 3:
+                break
+            value, weight, row = row.fields
+            if (
+                not isinstance(weight, torch.Tensor)
+                or weight.ndim != 0
+                or not weight.is_floating_point()
+                or (
+                    weights
+                    and (weight.device, weight.dtype)
+                    != (weights[0].device, weights[0].dtype)
+                )
+            ):
+                break
+            values.append(value)
+            weights.append(weight)
+        raise InvalidHandlerError("malformed deduction outcome rows")
+
+    return RuntimeHandler(
+        definition=definition,
+        clauses={
+            operation: RuntimeClause(
+                invoke=convert,
+                result_validator=lambda value: (
+                    isinstance(value, FiniteSampleable)
+                    and value.element == layout.key_type
                 ),
             )
         },

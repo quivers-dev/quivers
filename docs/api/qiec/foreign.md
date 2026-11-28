@@ -20,6 +20,9 @@ from that statement and from nothing else, in particular never from the handler'
 - [`DeductionOutcomeGrouping`][quivers.qiec.foreign.DeductionOutcomeGrouping] groups weighted rows
   whose checked keys admit exact structural equality. Ordinary QIEC calls compute the keys before
   this handler runs.
+- [`DeductionOutcomeLaw`][quivers.qiec.foreign.DeductionOutcomeLaw] turns nominal weighted rows
+  into a normalized `Sampleable` over their key type. The checked `outcome_law` binding uses this
+  adapter.
 
 A [`KernelSemiring`][quivers.qiec.foreign.KernelSemiring] names a member of the
 [algebra hierarchy](../core/algebras.md) by the subject of its [law claims](contracts.md#law-claims)

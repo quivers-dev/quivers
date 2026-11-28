@@ -16,7 +16,7 @@ from quivers.dsl.ast_nodes import (
     QiecInterpretationDecl,
 )
 from quivers.qiec._lexical_proof_types import export_lexical_proofs
-from quivers.qiec.canonical import tensor_type
+from quivers.qiec.canonical import sampleable_type, tensor_type
 from quivers.qiec.checking import ComputationSignature, KernelError
 from quivers.qiec.contracts import ParameterId
 from quivers.qiec.coverage import constructor_skolems
@@ -36,6 +36,7 @@ from quivers.qiec.effects import (
 )
 from quivers.qiec.foreign import (
     DeductionOutcomeGrouping,
+    DeductionOutcomeLaw,
     DeductionOutcomes,
     DeductionProofs,
 )
@@ -650,6 +651,89 @@ def declare_outcomes(
     return OutcomeQuery(instance, handler, terms, weights, production_indices)
 
 
+def elaborate_outcome_law(
+    elaborator: _Elaborator, node: LetExprCall, rows: Value, row_type: TypeExpr
+) -> tuple[TypeApplication, Handle]:
+    """Convert a generated nominal outcome family to its finite sampleable."""
+    for known in elaborator.handlers.values():
+        if known.output_type != row_type:
+            continue
+        semantics = known.foreign
+        if isinstance(semantics, DeductionOutcomeGrouping):
+            layout = semantics
+            break
+        if isinstance(semantics, DeductionOutcomes):
+            layout = DeductionOutcomeGrouping(
+                key_type=semantics.item_type,
+                empty=semantics.empty,
+                entry=semantics.entry,
+            )
+            break
+    else:
+        elaborator._fail(
+            node,
+            "outcome_law requires checked weighted deduction outcomes",
+            code=OUTCOME_CODE,
+        )
+    family_id = elaborator.registry.constructors[layout.entry].family
+    family = elaborator.registry.families[family_id]
+    stem = f"{family.name}__law"
+    instance_name = f"{stem}__instance"
+    result = sampleable_type(layout.key_type)
+    semantics = DeductionOutcomeLaw(layout=layout)
+    existing = elaborator.handlers.get(stem)
+    if existing is not None and existing.foreign == semantics:
+        handler = existing
+        instance = elaborator.instances[instance_name]
+        (operation,) = elaborator.registry.effects[handler.effect.id].operations
+    else:
+        effect_name = f"{stem}__Effect"
+        if (
+            existing is not None
+            or instance_name in elaborator.instances
+            or effect_name in elaborator.effects
+        ):
+            elaborator._fail(
+                node,
+                f"generated outcome law for {family.name!r} conflicts with a declaration",
+                code=OUTCOME_CODE,
+            )
+        effect_id = EffectId.derive(
+            elaborator.source.module_name, "effect", effect_name
+        )
+        ref = EffectRef(id=effect_id, name=effect_name)
+        operation = OperationDef(
+            id=OperationId.derive(effect_id, "operation", "outcome_law"),
+            name="outcome_law",
+            telescope=(),
+            arguments=(ArgumentDef(name="rows", type=row_type),),
+            result_type=result,
+        )
+        instance, handler = _register_query_handler(
+            elaborator, node, ref, operation, instance_name, stem, semantics
+        )
+        elaborator.registry.register_handler(handler)
+    request = EffectRequest(
+        instance=instance.entry.instance,
+        effect=instance.entry.effect,
+        operation=operation.id,
+        static_arguments=(),
+        arguments=(rows,),
+        result_type=result,
+        origin=SiteProvenance(
+            origin=elaborator._origin(
+                node, ("deduction", family.name, "outcome-law"), "effect-request"
+            )
+        ),
+    )
+    return result, Handle(
+        instance=request.instance,
+        handler=handler.id,
+        computation=Perform(request=request),
+        static_arguments=(),
+    )
+
+
 def _register_query_handler(
     elaborator: _Elaborator,
     node: object,
@@ -657,7 +741,10 @@ def _register_query_handler(
     operation: OperationDef,
     instance_name: str,
     handler_name: str,
-    semantics: DeductionOutcomes | DeductionProofs | DeductionOutcomeGrouping,
+    semantics: DeductionOutcomes
+    | DeductionProofs
+    | DeductionOutcomeGrouping
+    | DeductionOutcomeLaw,
 ) -> tuple[NamedEffectInstance, HandlerDef]:
     """Register a closed linear query with one private effect instance."""
     module = elaborator.source.module_name
