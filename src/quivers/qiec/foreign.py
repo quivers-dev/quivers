@@ -488,7 +488,9 @@ class SemiringProduct(QiecModel):
         return PRODUCT_LAWS
 
 
-type EnumerationReduction = Literal["logsumexp", "sum", "mean", "table"]
+type EnumerationReduction = Literal[
+    "logsumexp", "sum", "mean", "table", "log_expectation"
+]
 """How an enumeration aggregates its shots."""
 
 
@@ -502,7 +504,9 @@ class Enumeration(QiecModel):
     reduction : EnumerationReduction
         ``"logsumexp"`` for the log of the summed weights, ``"sum"`` or
         ``"mean"`` for those of the shots' values, ``"table"`` for the
-        shots themselves, one per support value.
+        shots themselves, one per support value. ``"log_expectation"``
+        aggregates scalar log scores, with ``LogWeight`` as both the
+        scope's input and output type.
     tag : str
         Always ``"enumeration"``.
     """
@@ -510,6 +514,18 @@ class Enumeration(QiecModel):
     grouped: bool = False
     reduction: EnumerationReduction = "logsumexp"
     tag: Literal["enumeration"] = "enumeration"
+
+    @dx.model_validator()
+    def _validate_reduction(self) -> None:
+        """Require one scalar answer for a log expectation.
+
+        Raises
+        ------
+        ValueError
+            If a log expectation is configured to preserve group positions.
+        """
+        if self.reduction == "log_expectation" and self.grouped:
+            raise ValueError("log expectation enumeration is ungrouped")
 
 
 class Settlement(QiecModel):
