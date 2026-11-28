@@ -590,6 +590,24 @@ cyclic query requires an arc-step budget. A draw beyond that budget
 raises a resource error. The reported path weight uses the
 original algebra and must fit its input precision.
 
+## Sparse backoff queries
+
+A `FailureArc` applies when a one-tape deterministic state lacks a
+transition for the requested symbol. An explicit zero-weight
+transition still takes precedence. `backoff_query` carries the
+unconsumed symbol through the failure chain, then consumes it at its
+first explicit match. It multiplies the failure weights in traversal
+order before the explicit weight. Completion uses the state's own
+final weight. Every failure chain must be acyclic.
+
+After indexing the declared transitions and checking the failure
+links, query construction follows only the selected path. Its work is
+linear in the number of examined symbol probes, and its storage is
+linear in the selected path length. In particular, the number of
+symbols in the alphabet does not determine either cost. The ordinary
+fixed-string evaluator reads the original weights when it scores
+the resulting path.
+
 ::: quivers.core.relations
     options:
       members:
@@ -613,6 +631,7 @@ original algebra and must fit its input precision.
         - ContextualEditChannel
         - ContextualEditPlan
         - QueryWork
+        - FailureArc
         - FiniteRelationRestriction
         - FiniteStringBeliefPlan
         - FiniteStringScore
@@ -638,6 +657,7 @@ original algebra and must fit its input precision.
         - StringVariable
         - TreeStringMarginal
         - auto_intersect
+        - backoff_query
         - best_marginal_output
         - closure
         - concatenate

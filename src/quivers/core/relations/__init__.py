@@ -51,6 +51,7 @@ __all__ = [
     "ContextualEditChannel",
     "ContextualEditPlan",
     "FixedStringQuery",
+    "FailureArc",
     "FiniteRelationRestriction",
     "FiniteStringBeliefPlan",
     "FiniteStringScore",
@@ -86,6 +87,7 @@ __all__ = [
     "TreeStringMarginal",
     "Words",
     "auto_intersect",
+    "backoff_query",
     "best_marginal_output",
     "closure",
     "concatenate",
@@ -692,3 +694,4 @@ from quivers.core.relations.regular_ep import (  # noqa: E402
     regular_string_ep,
 )
 from quivers.core.relations.equality import auto_intersect  # noqa: E402
+from quivers.core.relations.backoff import FailureArc, backoff_query  # noqa: E402
