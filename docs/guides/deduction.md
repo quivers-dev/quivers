@@ -762,7 +762,8 @@ outside its construction counters. When trace recording and the observer
 are both disabled, the runtime skips constructing the event and counting
 the forest records for it.
 
-An unguarded raw `parse_outcomes(D, sentence, "item")` query also emits
+A successful `parse_outcomes` or `parse_normalized_outcomes` query with
+an unguarded deduction and the `"item"` key also emits
 `deduction.outcomes.plan`. Decode the `plan` field with
 `quivers.qiec.loads(event.detail["plan"])` to read its `PlanRecord`. The
 record identifies the checked presentation, the log weight algebra, the
@@ -776,10 +777,14 @@ The query still builds a temporary packed forest, and the returned
 weights can keep an autograd tape over finite log weights at fixed
 support. The reverse bound includes dense adjoints for indexed reads
 from the weight tensor. The ordinary `deduction.outcomes` event continues
-to report its measured construction counters. The plan covers the raw
-item fold only. When a custom key consumes those rows, its grouping is a
-separate operation. Guarded, normalized, and built-in projection folds
-continue to emit their ordinary event.
+to report its measured construction counters. A normalized plan wraps
+the item weights in `NormalizedWeightRows` and requires division. The
+runtime checks that the common log normalizer is finite, which gives
+positive total mass, before emitting the plan. Computing and differentiating that normalizer
+scales linearly in the number of positive rows. When a custom key
+consumes raw item rows, its grouping is a separate operation. Guarded
+folds and built-in category and form projections emit their ordinary
+event.
 
 #### Ground rules and empty spans
 
@@ -849,20 +854,22 @@ measure the checked query and its isolated reducer as item count, key
 count, and key depth vary. The benchmark checks the masses and gradients
 at each parameter point in the refit.
 
-For a raw query that maps unguarded lexical item rows with a named key,
+When a query maps unguarded lexical item rows with a named key,
 `deduction.grouped_outcomes.plan` identifies the checked mapper, the key
 computation it calls, and the request that groups the results. Its
-`Outcome` uses that same computation identity. The record covers the
-conversion and grouping of supplied item rows. Chart construction
-has its own event and cost.
+`Outcome` uses that same computation identity. With normalization,
+`NormalizedWeightRows` wraps this outcome and records the division
+requirement and the common normalizer's cost. Chart construction has its
+own event and still computes raw item weights.
 
 The conversion makes one key call per row and forwards its log weight.
 The plan counts key evaluation separately from hash-table work. With
 expected table access, the grouping takes time linear in the number of
 rows and the total size of their keys. Collisions can require repeated
 comparisons. The reverse bound covers the grouping's scalar log sums at
-fixed keys and support. Normalized queries, proof keys and calls that
-supply already mapped rows continue to emit the ordinary grouping event.
+fixed keys and support, including one additional pass over the positive
+rows when normalizing. Proof keys and calls that supply already mapped
+rows emit the ordinary grouping event.
 
 #### Returning weighted proofs
 

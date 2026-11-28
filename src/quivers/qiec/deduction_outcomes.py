@@ -15,9 +15,9 @@ from quivers.qiec._lexical_outcome_plan import (
     OUTCOME_ALGORITHM,
     PROOF_ALGORITHM,
     proof_rows_plan_trace,
-    raw_item_plan_trace,
+    lexical_item_plan_trace,
 )
-from quivers.qiec._typed_key_outcome_plan import GROUPING_ALGORITHM, raw_key_plan_trace
+from quivers.qiec._typed_key_outcome_plan import GROUPING_ALGORITHM, key_plan_trace
 from quivers.qiec.canonical import sampleable_type, tensor_type
 from quivers.qiec.checking import KernelError, KernelRegistry
 from quivers.qiec.contracts import OccurrenceId, ParameterId
@@ -970,17 +970,18 @@ def outcome_grouping_handler(
                     grouping.entry,
                     ((representatives[key], mass) for key, mass in masses.items()),
                 )
-                if not normalized and module is not None:
+                if module is not None:
                     checked_module = module
                     context.emit_trace(
                         "deduction.grouped_outcomes.plan",
-                        lambda: raw_key_plan_trace(
+                        lambda: key_plan_trace(
                             checked_module,
                             definition,
                             grouping,
                             request,
                             context,
                             grouped,
+                            normalized,
                         ),
                     )
                 return TailResume(value=result)
@@ -1206,11 +1207,17 @@ def deduction_outcomes_handler(
         )
         presentation = semantics.presentation
         assert isinstance(presentation, RulePresentation)
-        if key == "item" and not normalized and not presentation.conditions:
+        if key == "item" and not presentation.conditions:
             context.emit_trace(
                 "deduction.outcomes.plan",
-                lambda: raw_item_plan_trace(
-                    semantics, definition, operation, len(tokens), len(terms), weights
+                lambda: lexical_item_plan_trace(
+                    semantics,
+                    definition,
+                    operation,
+                    len(tokens),
+                    len(terms),
+                    weights,
+                    normalized,
                 ),
             )
         return TailResume(value=result)

@@ -170,10 +170,12 @@ def test_packed_goals_map_once_then_group_and_normalize_exact_typed_keys() -> No
     ]
     assert calls == ["Mix__outcomes", "classify", "classify", "classify"]
     _assert_grouping_trace(result, normalized=True)
-    assert all(
-        event.event != "deduction.grouped_outcomes.plan"
+    (plan_event,) = [
+        event
         for event in result.result.trace
-    )
+        if event.event == "deduction.grouped_outcomes.plan"
+    ]
+    assert plan_event.detail["normalized"] is True
     for yes, no, oracle in (
         (1.0, 0.0, weights[:3].exp().sum()),
         (0.0, 1.0, weights[3].exp()),
@@ -290,7 +292,7 @@ def test_typed_key_plan_uses_the_checked_request_owner_and_lazy_trace(monkeypatc
     def forbidden(*args, **kwargs):
         pytest.fail("unobserved execution must not inspect the nominal key route")
 
-    monkeypatch.setattr(deduction_outcomes, "raw_key_plan_trace", forbidden)
+    monkeypatch.setattr(deduction_outcomes, "key_plan_trace", forbidden)
     extended, entry_name = joint_module(module, "raw")
     entry = program_entry(module, "raw")
     handlers = foreign_handler_configuration(module)

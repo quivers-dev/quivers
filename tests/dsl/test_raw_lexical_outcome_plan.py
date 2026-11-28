@@ -228,11 +228,10 @@ def test_raw_item_plan_keeps_the_checked_identity_and_matches_live_mass(checked)
 
 
 def test_plan_record_is_scoped_and_skipped_when_not_traced(checked, monkeypatch):
-    for name in ("forms", "normalized"):
-        result = run_program(checked, name, data=DATA, sites={})
-        events = tuple(event.event for event in result.result.trace)
-        assert "deduction.outcomes" in events
-        assert "deduction.outcomes.plan" not in events
+    result = run_program(checked, "forms", data=DATA, sites={})
+    events = tuple(event.event for event in result.result.trace)
+    assert "deduction.outcomes" in events
+    assert "deduction.outcomes.plan" not in events
 
     guarded = load_source(GUARDED_SOURCE + "\nexport packed\n").qiec
     result = run_program(guarded, "packed", data=DATA, sites={})
@@ -249,7 +248,7 @@ def test_plan_record_is_scoped_and_skipped_when_not_traced(checked, monkeypatch)
     def forbidden(*args, **kwargs):
         pytest.fail("an untraced result must not construct plan metadata")
 
-    monkeypatch.setattr(deduction_outcomes, "raw_item_plan_trace", forbidden)
+    monkeypatch.setattr(deduction_outcomes, "lexical_item_plan_trace", forbidden)
     extended, entry_name = joint_module(checked, "listed")
     entry = program_entry(checked, "listed")
     handlers = foreign_handler_configuration(checked)

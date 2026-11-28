@@ -2257,6 +2257,39 @@ class Outcome(_Observable):
     tag: Literal["outcome"] = "outcome"
 
 
+class NormalizedWeightRows(_Observable):
+    """A finite collection of weight rows divided by their common total.
+
+    The source fixes the row key. All supported rows share one divisor.
+    The normalization is defined only for positive total mass.
+
+    Parameters
+    ----------
+    source
+        The unnormalized item weights or weighted outcome pushforward.
+    tag
+        Always `"normalized-weight-rows"`.
+    """
+
+    source: Weight | Outcome = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["normalized-weight-rows"] = "normalized-weight-rows"
+
+    def requirements(self, algebra: ClaimSubject) -> tuple[Requirement, ...]:
+        """Require the source weighting laws and division by a nonzero total.
+
+        Parameters
+        ----------
+        algebra
+            The weight algebra.
+
+        Returns
+        -------
+        tuple of Requirement
+            The source requirements followed by division.
+        """
+        return (*self.source.requirements(algebra), *requirements((DIVISION,), algebra))
+
+
 class WeightedProofRows(_Observable):
     """The positive-weight derivations and their individual log masses.
 
@@ -2573,6 +2606,7 @@ type Observable = (
     | Best
     | KBest
     | Outcome
+    | NormalizedWeightRows
     | WeightedProofRows
     | Statistic
     | Marginal
@@ -4699,6 +4733,7 @@ __all__ = [
     "NOT_DIFFERENTIATED",
     "NoRetention",
     "NonlinearFold",
+    "NormalizedWeightRows",
     "Numerics",
     "ObjectiveGap",
     "Observable",

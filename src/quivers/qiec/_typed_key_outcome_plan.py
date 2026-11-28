@@ -1,10 +1,14 @@
-"""Trace the checked projection and raw grouping of typed item weights."""
+"""Trace the checked projection and grouping of typed item weights."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 from quivers.core.algebras import LOG_PROB
+from quivers.qiec._lexical_outcome_plan import (
+    NORMALIZATION_ASSUMPTION,
+    normalized_row_complexity,
+)
 from quivers.qiec.contracts import (
     WORD_RAM_EXPECTED_HASHING,
     AbsoluteLogError,
@@ -16,6 +20,7 @@ from quivers.qiec.contracts import (
     DerivativeSemantics,
     InterpretationId,
     NoRetention,
+    NormalizedWeightRows,
     Numerics,
     Outcome,
     Phase,
@@ -192,15 +197,16 @@ def _key_from_mapper(
     return key_call.callee
 
 
-def raw_key_plan_trace(
+def key_plan_trace(
     module: QiecModule,
     definition: HandlerDef,
     grouping: DeductionOutcomeGrouping,
     request: RuntimeRequest,
     context: ClauseContext,
     grouped: Mapping[Hashable, list[torch.Tensor]],
+    normalized: bool,
 ) -> dict[str, object] | None:
-    """Describe a completed native projection and raw grouping if recognized.
+    """Describe a completed native projection and grouping if recognized.
 
     Parameters
     ----------
@@ -214,6 +220,8 @@ def raw_key_plan_trace(
         The native handler context, with the active nominal call.
     grouped
         Weights grouped by their exact structural keys in the successful run.
+    normalized
+        Whether the returned positive rows share a finite log normalizer.
 
     Returns
     -------
@@ -290,20 +298,24 @@ def raw_key_plan_trace(
     if inputs:
         numerics = NumberDomain.of(next(iter(inputs.values())))
     retention = NoRetention()
+    source = Outcome(key=key_id)
+    quantity = (
+        "normalized log mass per exact named key"
+        if normalized
+        else "raw log mass per exact named key"
+    )
     record = PlanRecord(
         query=QuerySpec(
             presentation=presentation.id,
             interpretation=InterpretationId.derive(presentation.id, "weight"),
-            observable=Outcome(key=key_id),
+            observable=NormalizedWeightRows(source=source) if normalized else source,
             input_types=(rows.type, normalize.type),
             retention=retention,
         ),
         recursion=Acyclic(),
         accuracy=AccuracyContract(
             numerics=Numerics(dtype=numerics.real, domain="log"),
-            target=Target(
-                quantity="raw log mass per exact named key", metric=AbsoluteLogError()
-            ),
+            target=Target(quantity=quantity, metric=AbsoluteLogError()),
         ),
         retention=retention,
         algebra=LOG_PROB.subject,
@@ -315,9 +327,10 @@ def raw_key_plan_trace(
             "checked structural equality compares the key's nominal constructors and ordered fields",
             "the chart has its own plan and the grouping stage performs no rule joins",
             "a key call can consume evaluation fuel; no general host compute or memory cap applies",
+            *((NORMALIZATION_ASSUMPTION,) if normalized else ()),
         ),
         structure=presentation.analysis,
-        complexity=_WORK,
+        complexity=normalized_row_complexity(_WORK, quantity) if normalized else _WORK,
         alternatives=(
             Alternative(
                 algorithm="individual proof enumeration before key application",
@@ -341,7 +354,8 @@ def raw_key_plan_trace(
         "key": str(key.id),
         "key_type": dumps(grouping.key_type),
         "output_type": dumps(definition.output_type),
-        "normalized": False,
+        "normalized": normalized,
+        **({"positive_total_mass": True} if normalized else {}),
         "device": numerics.device,
         "temporary_provenance": "structural-key-table-and-weight-lists",
         "derivative": dumps(DerivativeSemantics()),

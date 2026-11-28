@@ -18,6 +18,7 @@ from quivers.qiec.contracts import (
     DerivativeSemantics,
     InterpretationId,
     NoRetention,
+    NormalizedWeightRows,
     Numerics,
     Phase,
     QuerySpec,
@@ -45,6 +46,12 @@ OUTCOME_ALGORITHM = "indexed-packed-forest-topological-fold"
 
 PROOF_ALGORITHM = "indexed-packed-forest-budgeted-enumeration"
 """The schedule run by the checked lexical proof provider."""
+
+NORMALIZATION_ASSUMPTION = (
+    "the common log normalizer is finite, so its mathematical mass is positive; "
+    "a zero or nonfinite total is refused"
+)
+"""The runtime gate every successful normalized-row report has passed."""
 
 _SETUP = "(m + 1)^3 P^2 + S (T + 1) + B^3 + W + n + J + V + E + R"
 _CHART_SPACE = "(m + 1)^2 P + S + T + B^2 + W + n + I + V + E + R"
@@ -130,15 +137,54 @@ _WORK = ComplexityClaim(
 )
 
 
-def raw_item_plan_trace(
+def normalized_row_complexity(work: ComplexityClaim, quantity: str) -> ComplexityClaim:
+    """Add one finite log normalizer, its broadcast subtraction, and their reverse.
+
+    Parameters
+    ----------
+    work
+        The executed raw row fold's time and space claims.
+    quantity
+        The quantity to which the additional normalization applies.
+
+    Returns
+    -------
+    ComplexityClaim
+        The same construction bound, with one linear pass in the positive
+        row count added to work and live storage for the other phases.
+    """
+    return work.with_(
+        query=quantity,
+        parameters=(
+            *work.parameters,
+            ComplexityParameter(
+                name="H", meaning="positive rows sharing one log normalizer"
+            ),
+        ),
+        bounds=tuple(
+            bound
+            if bound.phase == Phase.CONSTRUCTION
+            else bound.with_(expression=f"{bound.expression} + H")
+            for bound in work.bounds
+        ),
+        conditions=(
+            *work.conditions,
+            "stacking, summing, checking, subtracting and differentiating the common "
+            "log normalizer each visit at most H positive rows",
+        ),
+    )
+
+
+def lexical_item_plan_trace(
     descriptor: DeductionOutcomes,
     definition: HandlerDef,
     operation: OperationId,
     tokens: int,
     terms: int,
     weights: torch.Tensor,
+    normalized: bool,
 ) -> dict[str, object]:
-    """Describe the raw item operation that just returned its outcome rows.
+    """Describe the checked item operation that just returned its outcome rows.
 
     Parameters
     ----------
@@ -150,6 +196,8 @@ def raw_item_plan_trace(
         The actual sentence and lexical payload extents.
     weights
         The actual unbatched log-weight input.
+    normalized
+        Whether the returned positive rows share a finite log normalizer.
 
     Returns
     -------
@@ -163,11 +211,17 @@ def raw_item_plan_trace(
     assert isinstance(presentation, RulePresentation)
     numerics = NumberDomain.of(weights)
     retention = NoRetention()
+    source = Weight()
+    quantity = (
+        "normalized log mass per positive full-span item"
+        if normalized
+        else "raw log mass per positive full-span item"
+    )
     record = PlanRecord(
         query=QuerySpec(
             presentation=presentation.id,
             interpretation=InterpretationId.derive(presentation.id, "weight"),
-            observable=Weight(),
+            observable=NormalizedWeightRows(source=source) if normalized else source,
             input_types=(
                 *_lexical_input_types(descriptor, tokens, terms, weights),
                 STRING,
@@ -178,10 +232,7 @@ def raw_item_plan_trace(
         recursion=Acyclic(),
         accuracy=AccuracyContract(
             numerics=Numerics(dtype=numerics.real, domain="log"),
-            target=Target(
-                quantity="raw log mass per positive full-span item",
-                metric=AbsoluteLogError(),
-            ),
+            target=Target(quantity=quantity, metric=AbsoluteLogError()),
         ),
         retention=retention,
         algebra=LOG_PROB.subject,
@@ -196,9 +247,10 @@ def raw_item_plan_trace(
             "references are retained inside the provider until the fold returns",
             "the host fold has no compute or memory cap; QIEC step fuel does not "
             "charge each chart or reification operation",
+            *((NORMALIZATION_ASSUMPTION,) if normalized else ()),
         ),
         structure=presentation.analysis,
-        complexity=_WORK,
+        complexity=normalized_row_complexity(_WORK, quantity) if normalized else _WORK,
         alternatives=(
             Alternative(
                 algorithm="proof enumeration",
@@ -220,7 +272,8 @@ def raw_item_plan_trace(
         "presentation": str(presentation.id),
         "output_type": dumps(definition.output_type),
         "selector": "item",
-        "normalized": False,
+        "normalized": normalized,
+        **({"positive_total_mass": True} if normalized else {}),
         "sentence_length": tokens,
         "start": descriptor.start,
         "device": numerics.device,
