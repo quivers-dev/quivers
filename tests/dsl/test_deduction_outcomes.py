@@ -20,12 +20,24 @@ from quivers.dsl.qiec_tooling import target_diagnostics
 from quivers.inference import MCMC, NUTSKernel
 from quivers.qiec import deduction_outcomes
 from quivers.qiec.checking import KernelError
-from quivers.qiec.execution import ExecutionFailure
+from quivers.qiec.execution import (
+    ExecutionFailure,
+    RuntimeConfiguration,
+    RuntimeSelection,
+    run_named,
+)
 from quivers.qiec.foreign import DeductionOutcomes
 from quivers.qiec.kinds import NAT, IndexBinder, UserIndexSort
 from quivers.qiec.module import QiecModule, validate_module
 from quivers.qiec.numbers import NumberDomain
-from quivers.qiec.program_runtime import run_program
+from quivers.qiec.program_runtime import (
+    PARAMS_HANDLER,
+    foreign_handler_configuration,
+    joint_module,
+    program_entry,
+    run_program,
+    static_arguments_for,
+)
 from quivers.qiec.serialization import dumps, loads
 from quivers.qiec.terms import Bind, Call, Var
 from quivers.qiec.types import IndexLiteral, IndexVariable
@@ -302,8 +314,10 @@ def test_checked_response_score_and_gradient_equal_enumeration(monkeypatch) -> N
         kept = [axiom for axiom in axioms if dict(axiom.binding)["x2"] != "B"]
         return build(presentation, kept)
 
-    def raw_instead_of_normalized(semantics, tokens, terms, weights, key, normalize):
-        return chart(semantics, tokens, terms, weights, key, False)
+    def raw_instead_of_normalized(
+        semantics, tokens, terms, weights, key, normalize, *, context
+    ):
+        return chart(semantics, tokens, terms, weights, key, False, context=context)
 
     mutants = (
         ("LOG_PROB", MAX_PLUS),
@@ -343,6 +357,88 @@ def test_checked_response_score_and_gradient_equal_enumeration(monkeypatch) -> N
         )
         assert isinstance(found.value, torch.Tensor)
         assert torch.allclose(found.value, mass, atol=1e-12, rtol=1e-12)
+
+
+def test_checked_outcome_trace_reports_the_executed_selector_and_mass(
+    monkeypatch,
+) -> None:
+    items = CARDINALITY.replace('"form"', '"item"')
+    module = loads(dumps(lower_qvr_to_qiec(parse(GRAMMAR + QUERY + items))))
+    assert isinstance(module, QiecModule)
+    (descriptor,) = [
+        handler.foreign
+        for handler in module.handlers
+        if isinstance(handler.foreign, DeductionOutcomes)
+    ]
+    weights = torch.tensor([-0.1, -1.2, -0.7], dtype=torch.float64, requires_grad=True)
+    parameters = {f"Mix.lex.{i}": value for i, value in enumerate(weights.unbind())}
+    data = {"sentence": ("x", "y"), "a": 0.8, "b": 0.3}
+    observed = []
+    response = weights.new_tensor([0.8, 0.8, 0.3])
+    raw_total = (weights.exp() * response).sum()
+    normalized_total = weights.softmax(0) @ response
+    for name, selector, normalized, rows, expected in (
+        ("raw", "form", False, 2, raw_total),
+        ("example", "form", True, 2, normalized_total.log()),
+        ("keys", "item", False, 3, weights.new_tensor(3.0)),
+    ):
+        observed.clear()
+        datum = {"sentence": data["sentence"]} if name == "keys" else data
+        result = run_program(
+            module,
+            name,
+            data=datum,
+            sites={},
+            parameters=parameters,
+            observer=observed.append,
+        )
+        torch.testing.assert_close(result.value, expected)
+        if name != "keys":
+            torch.testing.assert_close(
+                torch.autograd.grad(result.value, weights)[0],
+                torch.autograd.grad(expected, weights)[0],
+            )
+        (event,) = [event for event in observed if event.event == "deduction.outcomes"]
+        assert event in result.result.trace
+        detail = event.detail
+        assert detail["presentation"] == str(descriptor.presentation.id)
+        assert detail["observer"] == "weighted-outcome-rows"
+        assert (detail["key"], detail["normalized"]) == (selector, normalized)
+        assert detail["algorithm"] == "indexed-packed-forest-topological-fold"
+        assert detail["recursion"] == "finite-acyclic"
+        assert detail["algebra"] == "LogProb"
+        assert detail["derivative"] == "autograd-on-finite-log-weights-at-fixed-support"
+        assert detail["retention"] == "packed-forest-during-query"
+        assert detail["goal_items"] == 3 and detail["positive_rows"] == rows
+        work = dict(detail["construction_work"])
+        # Four lexical occurrences and three binary rule instances.
+        assert work["provenance_records"] == 4 + 3 * (1 + 2)
+        assert work["hash_operations"] > 0 and work["key_comparisons"] > 0
+        assert set(work) == {"provenance_records", "hash_operations", "key_comparisons"}
+        assert "peak_bytes" in detail["unmeasured"]
+        assert "backward_arithmetic" in detail["unmeasured"]
+
+    def unmeasured(*args, **kwargs):
+        pytest.fail("an untraced query must not collect its report")
+
+    monkeypatch.setattr(deduction_outcomes, "_outcome_trace", unmeasured)
+    extended, entry_name = joint_module(module, "raw")
+    entry = program_entry(module, "raw")
+    handlers = foreign_handler_configuration(module)
+    handlers[PARAMS_HANDLER] = {"kind": "param", "values": parameters}
+    runtime = RuntimeConfiguration(
+        selections=(RuntimeSelection(provider="core", options={"handlers": handlers}),)
+    )
+    plain = run_named(
+        extended,
+        entry_name,
+        tuple(data[parameter.name] for parameter in entry.parameters),
+        static_arguments=static_arguments_for(entry, data, ()),
+        runtime=runtime,
+        record_trace=False,
+    )
+    assert plain.trace == ()
+    torch.testing.assert_close(plain.value[0], raw_total)
 
 
 def test_zero_mass_does_not_contaminate_a_finite_reading() -> None:

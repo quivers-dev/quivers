@@ -580,6 +580,22 @@ counts, plus the cost of constructing and grouping the structural keys.
 Grounding uses the indexed agenda to find the rule instances. The runtime
 grounds the forest again on each invocation.
 
+In a native checked trace, each completed built-in outcome fold emits
+`deduction.outcomes`. The event names the selector, the raw or normalized
+mass mode, and the indexed packed-forest schedule. It reports the number
+of full-span goal items before grouping and positive-mass rows after
+grouping. Construction work counts indexed lookups, candidates examined,
+and the stored forest edges plus their premise references. Those records
+are live during the query. The result contains the weighted rows.
+
+The event states the derivative contract for the log weights on fixed
+support. Its `unmeasured` field names fold and backward arithmetic, tensors
+saved for backward, and peak bytes. The report also covers the item query
+that precedes a user-defined key. The subsequent calls to that key are
+outside its construction counters. When trace recording and the observer
+are both disabled, the runtime skips constructing the event and counting
+the forest records for it.
+
 #### Ground rules and empty spans
 
 This deduction supplies one empty left boundary and uses it to complete

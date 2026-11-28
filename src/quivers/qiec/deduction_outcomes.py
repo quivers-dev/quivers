@@ -591,6 +591,8 @@ def _chart_outcomes(
     weights: torch.Tensor,
     key: str,
     normalize: bool,
+    *,
+    context: ClauseContext,
 ) -> dict[Ground, torch.Tensor]:
     """Push full-span goal weights forward to the selected structural keys.
 
@@ -608,6 +610,8 @@ def _chart_outcomes(
         The projection requested for the keys of the result.
     normalize
         Whether to subtract the log total mass from each returned log weight.
+    context
+        The runtime trace hook, if the invocation has one.
 
     Returns
     -------
@@ -642,7 +646,62 @@ def _chart_outcomes(
             else goal.arguments[2 if key == "category" else 3]
         )
         grouped.setdefault(outcome, []).append(weight)
-    return _outcome_masses(grouped, normalize)
+    rows = _outcome_masses(grouped, normalize)
+    context.emit_trace(
+        "deduction.outcomes",
+        lambda: _outcome_trace(forest, key, normalize, len(goals), len(rows)),
+    )
+    return rows
+
+
+def _outcome_trace(
+    forest: DerivationForest,
+    key: str,
+    normalized: bool,
+    goals: int,
+    rows: int,
+) -> Mapping[str, object]:
+    """Report the observed schedule and counters of one completed outcome fold.
+
+    Parameters
+    ----------
+    forest
+        The actual indexed forest built for the request.
+    key, normalized
+        The field selected as the outcome key and whether the returned
+        log masses subtract their common log total.
+    goals, rows
+        The number of full-span goal items and positive-mass result rows.
+
+    Returns
+    -------
+    Mapping of str to object
+        An execution record with construction measurements only.
+    """
+    construction = forest.report()
+    return {
+        "presentation": str(forest.presentation.id),
+        "observer": "weighted-outcome-rows",
+        "key": key,
+        "normalized": normalized,
+        "algorithm": "indexed-packed-forest-topological-fold",
+        "recursion": "finite-acyclic",
+        "algebra": "LogProb",
+        "derivative": "autograd-on-finite-log-weights-at-fixed-support",
+        "retention": "packed-forest-during-query",
+        "goal_items": goals,
+        "positive_rows": rows,
+        "construction_work": tuple(
+            (measure.value, getattr(construction, measure.value))
+            for measure in construction.measured
+        ),
+        "unmeasured": (
+            "fold_arithmetic",
+            "backward_arithmetic",
+            "elements_saved_for_backward",
+            "peak_bytes",
+        ),
+    }
 
 
 def _outcome_masses[K](
@@ -1042,6 +1101,7 @@ def deduction_outcomes_handler(
             weights,
             key,
             decide(normalize, "outcome normalization"),
+            context=context,
         )
         numbers = context.attachments.numbers
         constructors = dict(semantics.item_constructors)

@@ -1495,6 +1495,25 @@ class ClauseContext:
         """
         return self._evaluator.attachments
 
+    def emit_trace(
+        self,
+        event: str,
+        detail: Callable[[], Mapping[str, object]],
+    ) -> None:
+        """Emit a handler event through an installed execution observer.
+
+        Parameters
+        ----------
+        event
+            The stable event name.
+        detail
+            A function producing JSON-compatible event data. Without a
+            trace hook, the function is never called.
+        """
+        hook = self._evaluator.trace_hook
+        if hook is not None:
+            hook(event, detail())
+
     def evaluate(self, computation: Computation) -> object:
         """Evaluate a clause body in the outer handler context.
 
